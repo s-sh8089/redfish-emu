@@ -1,0 +1,11 @@
+services:
+  redfish-emu:
+    build: .
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./data:/data
+    environment:
+      - FLASK_APP=app
+      - FLASK_ENV=development
+      - DB_PATH=/data/redfish.db
