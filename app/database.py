@@ -358,6 +358,19 @@ def _create_tables(db):
             password TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS virtual_media (
+            id TEXT PRIMARY KEY,
+            manager_id TEXT,
+            name TEXT,
+            media_types TEXT,
+            image TEXT DEFAULT '',
+            image_name TEXT DEFAULT '',
+            inserted INTEGER DEFAULT 0,
+            write_protected INTEGER DEFAULT 0,
+            transfer_protocol_type TEXT DEFAULT '',
+            connected_via TEXT DEFAULT 'NotConnected'
+        );
+
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
             task_state TEXT DEFAULT 'Running',
@@ -773,6 +786,20 @@ VQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7
         db.execute(
             'INSERT INTO triggers (id, name, metric_type) VALUES (?,?,?)',
             ('TempTrigger', 'Temperature Trigger', 'Numeric')
+        )
+
+    # Virtual Media
+    if db.execute('SELECT COUNT(*) FROM virtual_media').fetchone()[0] == 0:
+        vm_items = [
+            ('CD', 'bmc', 'Virtual CD', json.dumps(['CD', 'DVD']), '', '', 0, 1, '', 'NotConnected'),
+            ('USB', 'bmc', 'Virtual USB', json.dumps(['USB']), '', '', 0, 0, '', 'NotConnected'),
+        ]
+        db.executemany(
+            '''INSERT INTO virtual_media
+               (id, manager_id, name, media_types, image, image_name, inserted,
+                write_protected, transfer_protocol_type, connected_via)
+               VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            vm_items
         )
 
     # Aggregation Sources
