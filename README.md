@@ -176,6 +176,10 @@ docker compose up --build
 | GET | `/redfish/v1/Managers/` |
 | **GET, PATCH** | `/redfish/v1/Managers/bmc/` |
 | **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.Reset` |
+| **GET, POST** | `/redfish/v1/Managers/bmc/VirtualMedia/` |
+| **GET** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/` |
+| **POST** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.InsertMedia` |
+| **POST** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.EjectMedia` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/VLANs/` |
@@ -344,6 +348,65 @@ PATCH 後は指定した値が GET のレスポンスに反映されます。
 |---|---|---|
 | `DateTime` | `2025-01-15T09:00:00+09:00` | ISO 8601 準拠 |
 | `DateTimeLocalOffset` | `+09:00` / `-05:00` | `+HH:MM` または `-HH:MM` |
+
+### ISO イメージのリモートマウント（VirtualMedia）
+
+BMC の VirtualMedia 機能を使って、HTTP/HTTPS で公開した ISO イメージをリモートマウントできます。  
+OS の再インストールや LiveCD 起動に使用します。
+
+初期スロット: `CD`（CD/DVD）と `USB`（USB）の 2 つが登録されています。
+
+#### ISO をマウントする
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.InsertMedia \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Image": "http://192.168.1.10/iso/ubuntu-24.04-server.iso",
+    "TransferProtocolType": "HTTP",
+    "WriteProtected": true
+  }'
+```
+
+| フィールド | 必須 | 説明 |
+|---|---|---|
+| `Image` | 必須 | ISO イメージの URI |
+| `TransferProtocolType` | 任意 | `HTTP` / `HTTPS` / `TFTP` など（デフォルト: `HTTP`） |
+| `WriteProtected` | 任意 | 書き込み保護（デフォルト: `true`） |
+
+#### マウント状態を確認する
+
+```bash
+curl -s http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/
+```
+
+| フィールド | マウント中 | 未マウント |
+|---|---|---|
+| `Inserted` | `true` | `false` |
+| `ConnectedVia` | `URI` | `NotConnected` |
+| `ImageName` | ファイル名 | `""` |
+
+#### ISO をアンマウントする
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+未マウント状態で EjectMedia を呼ぶと `400 Bad Request` が返ります。
+
+#### スロットを追加する
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Name": "Virtual DVD",
+    "MediaTypes": ["DVD"]
+  }'
+```
+
+成功時は `201 Created` と新規リソースが返ります。
 
 ### ファームウェア更新
 

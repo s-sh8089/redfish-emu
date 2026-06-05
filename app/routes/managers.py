@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response
 
 bp = Blueprint('managers', __name__)
 
@@ -76,6 +76,7 @@ def manager_bmc():
         'EthernetInterfaces': {'@odata.id': f'{BASE}/bmc/EthernetInterfaces/'},
         'LogServices': {'@odata.id': f'{BASE}/bmc/LogServices/'},
         'NetworkProtocol': {'@odata.id': f'{BASE}/bmc/NetworkProtocol/'},
+        'VirtualMedia': {'@odata.id': f'{BASE}/bmc/VirtualMedia/'},
         'Links': {
             'ManagerForChassis': [{'@odata.id': '/redfish/v1/Chassis/chassis1/'}],
             'ManagerForChassis@odata.count': 1,
@@ -351,6 +352,121 @@ def network_protocol():
         'IPMI': proto.get('IPMI', _NETWORK_PROTOCOL_DEFAULT['IPMI']),
         'NTP': proto.get('NTP', _NETWORK_PROTOCOL_DEFAULT['NTP']),
     })
+
+
+@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/', methods=['GET', 'POST'])
+def bmc_virtual_media():
+    db = get_db()
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        name = data.get('Name', 'Virtual Media')
+        media_types = data.get('MediaTypes', ['CD', 'DVD'])
+        count = db.execute('SELECT COUNT(*) FROM virtual_media WHERE manager_id="bmc"').fetchone()[0]
+        vm_id = data.get('Id') or f'VM{count + 1}'
+        if db.execute('SELECT id FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone():
+            return bad_request_response(f'VirtualMedia with Id "{vm_id}" already exists')
+        db.execute(
+            '''INSERT INTO virtual_media
+               (id, manager_id, name, media_types, image, image_name, inserted,
+                write_protected, transfer_protocol_type, connected_via)
+               VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (vm_id, 'bmc', name, json.dumps(media_types), '', '', 0, 0, '', 'NotConnected')
+        )
+        db.commit()
+        row = db.execute('SELECT * FROM virtual_media WHERE id=?', (vm_id,)).fetchone()
+        location = f'{BASE}/bmc/VirtualMedia/{vm_id}/'
+        return created_response(_vm_to_dict(row), location)
+
+    rows = db.execute('SELECT id FROM virtual_media WHERE manager_id="bmc"').fetchall()
+    members = [{'@odata.id': f'{BASE}/bmc/VirtualMedia/{row["id"]}/'}
+               for row in rows]
+    return json_response({
+        '@odata.id': f'{BASE}/bmc/VirtualMedia/',
+        '@odata.type': '#VirtualMediaCollection.VirtualMediaCollection',
+        'Name': 'Virtual Media Collection',
+        'Members@odata.count': len(members),
+        'Members': members
+    })
+
+
+@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/')
+def bmc_virtual_media_item(vm_id):
+    db = get_db()
+    row = db.execute('SELECT * FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone()
+    if not row:
+        return not_found_response()
+    return json_response(_vm_to_dict(row))
+
+
+@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/Actions/VirtualMedia.InsertMedia', methods=['POST'])
+def bmc_insert_media(vm_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone():
+        return not_found_response()
+    data = request.get_json() or {}
+    image = data.get('Image')
+    if not image:
+        return bad_request_response('Image is required')
+    image_name = image.rstrip('/').split('/')[-1]
+    transfer_protocol = data.get('TransferProtocolType', 'HTTP')
+    write_protected = data.get('WriteProtected', True)
+    db.execute(
+        '''UPDATE virtual_media
+           SET image=?, image_name=?, inserted=1, write_protected=?,
+               transfer_protocol_type=?, connected_via='URI'
+           WHERE id=? AND manager_id='bmc' ''',
+        (image, image_name, 1 if write_protected else 0, transfer_protocol, vm_id)
+    )
+    db.commit()
+    return no_content_response()
+
+
+@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/Actions/VirtualMedia.EjectMedia', methods=['POST'])
+def bmc_eject_media(vm_id):
+    db = get_db()
+    row = db.execute('SELECT id, inserted FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone()
+    if not row:
+        return not_found_response()
+    if not row['inserted']:
+        return bad_request_response('No media is currently inserted')
+    db.execute(
+        '''UPDATE virtual_media
+           SET image='', image_name='', inserted=0, write_protected=0,
+               transfer_protocol_type='', connected_via='NotConnected'
+           WHERE id=? AND manager_id='bmc' ''',
+        (vm_id,)
+    )
+    db.commit()
+    return no_content_response()
+
+
+def _vm_to_dict(row):
+    media_types = json.loads(row['media_types']) if row['media_types'] else []
+    vm_id = row['id']
+    d = {
+        '@odata.id': f'{BASE}/bmc/VirtualMedia/{vm_id}/',
+        '@odata.type': '#VirtualMedia.v1_6_0.VirtualMedia',
+        'Id': vm_id,
+        'Name': row['name'],
+        'MediaTypes': media_types,
+        'Image': row['image'] or '',
+        'ImageName': row['image_name'] or '',
+        'Inserted': bool(row['inserted']),
+        'WriteProtected': bool(row['write_protected']),
+        'ConnectedVia': row['connected_via'],
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
+        'Actions': {
+            '#VirtualMedia.InsertMedia': {
+                'target': f'{BASE}/bmc/VirtualMedia/{vm_id}/Actions/VirtualMedia.InsertMedia'
+            },
+            '#VirtualMedia.EjectMedia': {
+                'target': f'{BASE}/bmc/VirtualMedia/{vm_id}/Actions/VirtualMedia.EjectMedia'
+            }
+        }
+    }
+    if row['transfer_protocol_type']:
+        d['TransferProtocolType'] = row['transfer_protocol_type']
+    return d
 
 
 @bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/')
