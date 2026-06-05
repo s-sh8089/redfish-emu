@@ -1,8 +1,10 @@
 import json
 import uuid
-from flask import Blueprint, request
+from datetime import datetime, timezone
+from flask import Blueprint, request, current_app
 from ..database import get_db
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
+from ..event_dispatcher import dispatch_event
 
 bp = Blueprint('event_service', __name__)
 
@@ -87,6 +89,33 @@ def subscription(sub_id):
         db.execute('DELETE FROM event_subscriptions WHERE id=?', (sub_id,))
         db.commit()
         return no_content_response()
+
+
+@bp.route('/redfish/v1/EventService/Actions/EventService.SubmitTestEvent', methods=['POST'])
+def submit_test_event():
+    data = request.get_json() or {}
+    event_id = str(uuid.uuid4()).replace('-', '')[:8]
+    now = datetime.now(timezone.utc).isoformat()
+
+    event_payload = {
+        '@odata.type': '#Event.v1_7_0.Event',
+        'Id': event_id,
+        'Name': 'Test Event',
+        'Context': data.get('Context', ''),
+        'Events': [{
+            'EventType': data.get('EventType', 'Alert'),
+            'EventId': event_id,
+            'EventTimestamp': now,
+            'Severity': data.get('Severity', 'OK'),
+            'Message': data.get('Message', 'This is a test event.'),
+            'MessageId': data.get('MessageId', 'Base.1.0.GeneralError'),
+            'MessageArgs': data.get('MessageArgs', []),
+            'OriginOfCondition': {'@odata.id': data.get('OriginOfCondition', '/redfish/v1/')}
+        }]
+    }
+
+    dispatch_event(current_app._get_current_object(), event_payload)
+    return no_content_response()
 
 
 def _subscription_to_dict(row):

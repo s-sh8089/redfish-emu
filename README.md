@@ -192,6 +192,7 @@ docker compose up --build
 | POST | `/redfish/v1/EventService/Subscriptions/` |
 | GET | `/redfish/v1/EventService/Subscriptions/{id}/` |
 | DELETE | `/redfish/v1/EventService/Subscriptions/{id}/` |
+| POST | `/redfish/v1/EventService/Actions/EventService.SubmitTestEvent` |
 
 ### Update Service
 
@@ -263,7 +264,11 @@ curl -s -X POST http://localhost:8008/redfish/v1/AccountService/Accounts/ \
   }'
 ```
 
-### イベントサブスクリプションの登録
+### Webhook アラート通知
+
+サブスクリプションを登録すると、イベント発生時に指定した URL へ HTTP POST が送信されます。
+
+#### 1. 受け取り先 URL を登録する
 
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/EventService/Subscriptions/ \
@@ -271,8 +276,71 @@ curl -s -X POST http://localhost:8008/redfish/v1/EventService/Subscriptions/ \
   -d '{
     "Destination": "http://your-server/webhook",
     "Context": "my-context",
-    "EventTypes": ["Alert", "StatusChange"]
+    "EventTypes": ["Alert"]
   }'
+```
+
+`EventTypes` を省略すると全種類のイベントを受信します。複数のサブスクリプションを登録することもできます。
+
+#### 2. テストイベントを送信する
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X POST http://localhost:8008/redfish/v1/EventService/Actions/EventService.SubmitTestEvent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "EventType": "Alert",
+    "Severity": "Critical",
+    "Message": "CPU temperature exceeded critical threshold.",
+    "MessageId": "ThermalEvents.1.0.TemperatureAboveUpperCriticalThreshold"
+  }'
+```
+
+`204` が返れば成功です。登録済みのサブスクリプションに対してバックグラウンドで POST が送信されます。
+
+リクエストボディのフィールドはすべて省略可能です。
+
+| フィールド | デフォルト値 |
+|---|---|
+| `EventType` | `Alert` |
+| `Severity` | `OK` |
+| `Message` | `This is a test event.` |
+| `MessageId` | `Base.1.0.GeneralError` |
+| `MessageArgs` | `[]` |
+| `Context` | `""` |
+| `OriginOfCondition` | `/redfish/v1/` |
+
+#### 3. サブスクリプション一覧・削除
+
+```bash
+# 一覧
+curl -s http://localhost:8008/redfish/v1/EventService/Subscriptions/ | python3 -m json.tool
+
+# 削除
+curl -s -X DELETE http://localhost:8008/redfish/v1/EventService/Subscriptions/{id}/
+```
+
+#### Webhook の POST ボディ例
+
+```json
+{
+  "@odata.type": "#Event.v1_7_0.Event",
+  "Id": "a1b2c3d4",
+  "Name": "Test Event",
+  "Context": "my-context",
+  "Events": [
+    {
+      "EventType": "Alert",
+      "EventId": "a1b2c3d4",
+      "EventTimestamp": "2026-06-05T06:19:16+00:00",
+      "Severity": "Critical",
+      "Message": "CPU temperature exceeded critical threshold.",
+      "MessageId": "ThermalEvents.1.0.TemperatureAboveUpperCriticalThreshold",
+      "MessageArgs": [],
+      "OriginOfCondition": { "@odata.id": "/redfish/v1/" }
+    }
+  ]
+}
 ```
 
 ---
@@ -313,6 +381,7 @@ redfish-emu/
 │   ├── config.py            # 設定 (DB_PATH など)
 │   ├── database.py          # SQLite 初期化・シードデータ
 │   ├── helpers.py           # レスポンス共通関数
+│   ├── event_dispatcher.py  # Webhook 配信ロジック
 │   └── routes/              # Blueprint (リソース単位)
 │       ├── service_root.py
 │       ├── account_service.py
