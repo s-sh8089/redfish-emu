@@ -1,8 +1,9 @@
 import json
+import re
 from datetime import datetime, timezone
-from flask import Blueprint
+from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
 
 bp = Blueprint('managers', __name__)
 
@@ -20,13 +21,38 @@ def managers():
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/')
+@bp.route('/redfish/v1/Managers/bmc/', methods=['GET', 'PATCH'])
 def manager_bmc():
     db = get_db()
     row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
     if not row:
         return not_found_response()
-    now = datetime.now(timezone.utc).isoformat()
+
+    if request.method == 'PATCH':
+        data = request.get_json() or {}
+        fields = []
+        values = []
+        if 'DateTime' in data:
+            try:
+                datetime.fromisoformat(data['DateTime'])
+            except (ValueError, TypeError):
+                return bad_request_response('DateTime must be a valid ISO 8601 datetime string')
+            fields.append('datetime=?')
+            values.append(data['DateTime'])
+        if 'DateTimeLocalOffset' in data:
+            if not re.match(r'^[+-]\d{2}:\d{2}$', str(data['DateTimeLocalOffset'])):
+                return bad_request_response('DateTimeLocalOffset must be in format +HH:MM or -HH:MM')
+            fields.append('datetime_local_offset=?')
+            values.append(data['DateTimeLocalOffset'])
+        if fields:
+            values.append('bmc')
+            db.execute(f'UPDATE managers SET {", ".join(fields)} WHERE id=?', values)
+            db.commit()
+        row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
+
+    # PATCH で日時が設定されていれば DB の値を返し、未設定なら現在時刻を返す
+    dt = row['datetime'] if row['datetime'] else datetime.now(timezone.utc).isoformat()
+
     return json_response({
         '@odata.id': '/redfish/v1/Managers/bmc/',
         '@odata.type': '#Manager.v1_17_0.Manager',
@@ -41,7 +67,7 @@ def manager_bmc():
         'PartNumber': row['part_number'],
         'SparePartNumber': row['spare_part_number'],
         'PowerState': row['power_state'],
-        'DateTime': now,
+        'DateTime': dt,
         'DateTimeLocalOffset': row['datetime_local_offset'],
         'LastResetTime': row['last_reset_time'],
         'UUID': row['uuid'],
@@ -70,6 +96,23 @@ def manager_bmc():
             }
         }
     })
+
+
+_MANAGER_RESET_TYPES = {'GracefulRestart', 'ForceRestart'}
+
+
+@bp.route('/redfish/v1/Managers/bmc/Actions/Manager.Reset', methods=['POST'])
+def manager_bmc_reset():
+    db = get_db()
+    if not db.execute('SELECT id FROM managers WHERE id="bmc"').fetchone():
+        return not_found_response()
+    data = request.get_json() or {}
+    reset_type = data.get('ResetType')
+    if reset_type not in _MANAGER_RESET_TYPES:
+        return bad_request_response(f'Invalid ResetType. Allowable values: {sorted(_MANAGER_RESET_TYPES)}')
+    db.execute('UPDATE managers SET power_state="On" WHERE id="bmc"')
+    db.commit()
+    return no_content_response()
 
 
 @bp.route('/redfish/v1/Managers/bmc/EthernetInterfaces/')
@@ -186,6 +229,14 @@ def bmc_redfishlog():
     })
 
 
+@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog', methods=['POST'])
+def bmc_redfishlog_clear():
+    db = get_db()
+    db.execute("DELETE FROM log_entries WHERE log_service_id='RedfishLog' AND parent_type='manager'")
+    db.commit()
+    return no_content_response()
+
+
 @bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/')
 def bmc_log_entries():
     db = get_db()
@@ -258,8 +309,33 @@ def grpc_statistics():
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/')
+_NETWORK_PROTOCOL_DEFAULT = {
+    'HTTP': {'ProtocolEnabled': True, 'Port': 80},
+    'HTTPS': {'ProtocolEnabled': True, 'Port': 443},
+    'SSH': {'ProtocolEnabled': True, 'Port': 22},
+    'IPMI': {'ProtocolEnabled': True, 'Port': 623},
+    'NTP': {'ProtocolEnabled': True, 'Port': 123, 'NTPServers': ['pool.ntp.org'], 'NetworkSuppliedServers': []},
+}
+_NETWORK_PROTOCOL_PATCHABLE = {'HTTP', 'HTTPS', 'SSH', 'IPMI', 'NTP'}
+
+
+@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/', methods=['GET', 'PATCH'])
 def network_protocol():
+    db = get_db()
+    row = db.execute('SELECT network_protocol FROM managers WHERE id="bmc"').fetchone()
+    proto = json.loads(row['network_protocol']) if row and row['network_protocol'] else \
+        {k: dict(v) for k, v in _NETWORK_PROTOCOL_DEFAULT.items()}
+    if request.method == 'PATCH':
+        data = request.get_json() or {}
+        for key in _NETWORK_PROTOCOL_PATCHABLE:
+            if key in data and isinstance(data[key], dict):
+                current = proto.get(key, dict(_NETWORK_PROTOCOL_DEFAULT.get(key, {})))
+                current.update(data[key])
+                proto[key] = current
+        db.execute('UPDATE managers SET network_protocol=? WHERE id="bmc"', (json.dumps(proto),))
+        db.commit()
+    https = dict(proto.get('HTTPS', _NETWORK_PROTOCOL_DEFAULT['HTTPS']))
+    https['Certificates'] = {'@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/'}
     return json_response({
         '@odata.id': f'{BASE}/bmc/NetworkProtocol/',
         '@odata.type': '#ManagerNetworkProtocol.v1_9_0.ManagerNetworkProtocol',
@@ -269,20 +345,11 @@ def network_protocol():
         'Status': {'State': 'Enabled', 'Health': 'OK'},
         'HostName': 'bmc',
         'FQDN': 'bmc.example.com',
-        'HTTP': {'ProtocolEnabled': True, 'Port': 80},
-        'HTTPS': {
-            'ProtocolEnabled': True,
-            'Port': 443,
-            'Certificates': {'@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/'}
-        },
-        'SSH': {'ProtocolEnabled': True, 'Port': 22},
-        'IPMI': {'ProtocolEnabled': True, 'Port': 623},
-        'NTP': {
-            'ProtocolEnabled': True,
-            'Port': 123,
-            'NTPServers': ['pool.ntp.org'],
-            'NetworkSuppliedServers': []
-        }
+        'HTTP': proto.get('HTTP', _NETWORK_PROTOCOL_DEFAULT['HTTP']),
+        'HTTPS': https,
+        'SSH': proto.get('SSH', _NETWORK_PROTOCOL_DEFAULT['SSH']),
+        'IPMI': proto.get('IPMI', _NETWORK_PROTOCOL_DEFAULT['IPMI']),
+        'NTP': proto.get('NTP', _NETWORK_PROTOCOL_DEFAULT['NTP']),
     })
 
 

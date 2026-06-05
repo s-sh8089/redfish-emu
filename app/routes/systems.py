@@ -1,7 +1,7 @@
 import json
 from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
 
 bp = Blueprint('systems', __name__)
 
@@ -118,14 +118,89 @@ def system():
     })
 
 
-@bp.route('/redfish/v1/Systems/system/Bios/')
+_SYSTEM_RESET_TYPES = {'On', 'ForceOff', 'GracefulShutdown', 'GracefulRestart', 'ForceRestart', 'Nmi', 'ForceOn', 'PushPowerButton'}
+_SYSTEM_RESET_TO_POWER_ON = {'On', 'ForceOn', 'GracefulRestart', 'ForceRestart', 'Nmi'}
+_SYSTEM_RESET_TO_POWER_OFF = {'ForceOff', 'GracefulShutdown'}
+
+
+@bp.route('/redfish/v1/Systems/system/Actions/ComputerSystem.Reset', methods=['POST'])
+def system_reset():
+    db = get_db()
+    row = db.execute('SELECT power_state FROM systems WHERE id="system"').fetchone()
+    if not row:
+        return not_found_response()
+    data = request.get_json() or {}
+    reset_type = data.get('ResetType')
+    if reset_type not in _SYSTEM_RESET_TYPES:
+        return bad_request_response(f'Invalid ResetType. Allowable values: {sorted(_SYSTEM_RESET_TYPES)}')
+    if reset_type in _SYSTEM_RESET_TO_POWER_ON:
+        new_state = 'On'
+    elif reset_type in _SYSTEM_RESET_TO_POWER_OFF:
+        new_state = 'Off'
+    else:
+        new_state = 'Off' if row['power_state'] == 'On' else 'On'
+    db.execute('UPDATE systems SET power_state=? WHERE id="system"', (new_state,))
+    db.commit()
+    return no_content_response()
+
+
+@bp.route('/redfish/v1/Systems/system/SecureBoot/', methods=['GET', 'PATCH'])
+def secure_boot():
+    db = get_db()
+    row = db.execute('SELECT secure_boot_enable FROM systems WHERE id="system"').fetchone()
+    if not row:
+        return not_found_response()
+    if request.method == 'PATCH':
+        data = request.get_json() or {}
+        if 'SecureBootEnable' in data:
+            db.execute('UPDATE systems SET secure_boot_enable=? WHERE id="system"',
+                       (1 if data['SecureBootEnable'] else 0,))
+            db.commit()
+        row = db.execute('SELECT secure_boot_enable FROM systems WHERE id="system"').fetchone()
+    return json_response({
+        '@odata.id': '/redfish/v1/Systems/system/SecureBoot/',
+        '@odata.type': '#SecureBoot.v1_1_0.SecureBoot',
+        'Id': 'SecureBoot',
+        'Name': 'UEFI Secure Boot',
+        'Description': 'UEFI Secure Boot',
+        'SecureBootEnable': bool(row['secure_boot_enable']),
+        'SecureBootCurrentBoot': 'Enabled' if row['secure_boot_enable'] else 'Disabled',
+        'SecureBootMode': 'UserMode',
+        'Actions': {
+            '#SecureBoot.ResetKeys': {
+                'target': '/redfish/v1/Systems/system/SecureBoot/Actions/SecureBoot.ResetKeys'
+            }
+        }
+    })
+
+
+@bp.route('/redfish/v1/Systems/system/Bios/', methods=['GET', 'PATCH'])
 def bios():
+    db = get_db()
+    row = db.execute('SELECT bios_version, bios_attributes FROM systems WHERE id="system"').fetchone()
+    if not row:
+        return not_found_response()
+    attrs = json.loads(row['bios_attributes']) if row['bios_attributes'] else {
+        'BootMode': 'Uefi',
+        'NicBoot1': 'NetworkBoot',
+        'NicBoot2': 'Disabled',
+        'QuietBoot': True,
+        'SriovGlobalEnable': 'Disabled',
+    }
+    if request.method == 'PATCH':
+        data = request.get_json() or {}
+        if 'Attributes' in data and isinstance(data['Attributes'], dict):
+            attrs.update(data['Attributes'])
+            db.execute('UPDATE systems SET bios_attributes=? WHERE id="system"',
+                       (json.dumps(attrs),))
+            db.commit()
     return json_response({
         '@odata.id': '/redfish/v1/Systems/system/Bios/',
         '@odata.type': '#Bios.v1_2_0.Bios',
         'Id': 'Bios',
         'Name': 'BIOS Configuration',
         'Description': 'BIOS Configuration',
+        'Attributes': attrs,
         'Links': {
             'ActiveSoftwareImage': {'@odata.id': '/redfish/v1/UpdateService/FirmwareInventory/BIOS/'},
             'SoftwareImages': [{'@odata.id': '/redfish/v1/UpdateService/FirmwareInventory/BIOS/'}],
@@ -425,6 +500,14 @@ def system_eventlog():
     })
 
 
+@bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog', methods=['POST'])
+def system_eventlog_clear():
+    db = get_db()
+    db.execute("DELETE FROM log_entries WHERE log_service_id='EventLog' AND parent_type='system'")
+    db.commit()
+    return no_content_response()
+
+
 @bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Entries/')
 def system_eventlog_entries():
     db = get_db()
@@ -471,6 +554,14 @@ def system_sel():
             }
         }
     })
+
+
+@bp.route('/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog', methods=['POST'])
+def system_sel_clear():
+    db = get_db()
+    db.execute("DELETE FROM log_entries WHERE log_service_id='SEL' AND parent_type='system'")
+    db.commit()
+    return no_content_response()
 
 
 @bp.route('/redfish/v1/Systems/system/LogServices/SEL/Entries/')

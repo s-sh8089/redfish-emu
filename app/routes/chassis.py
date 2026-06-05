@@ -1,7 +1,7 @@
 import json
-from flask import Blueprint
+from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
 
 bp = Blueprint('chassis', __name__)
 
@@ -55,6 +55,24 @@ def chassis(chassis_id):
             }
         }
     })
+
+
+_CHASSIS_RESET_TYPES = {'On', 'ForceOff', 'PowerCycle'}
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/Actions/Chassis.Reset', methods=['POST'])
+def chassis_reset(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    data = request.get_json() or {}
+    reset_type = data.get('ResetType')
+    if reset_type not in _CHASSIS_RESET_TYPES:
+        return bad_request_response(f'Invalid ResetType. Allowable values: {sorted(_CHASSIS_RESET_TYPES)}')
+    new_state = 'Off' if reset_type == 'ForceOff' else 'On'
+    db.execute('UPDATE chassis SET power_state=? WHERE id=?', (new_state, chassis_id))
+    db.commit()
+    return no_content_response()
 
 
 @bp.route('/redfish/v1/Chassis/<chassis_id>/Assembly/')

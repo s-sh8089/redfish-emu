@@ -1,7 +1,7 @@
 import json
-from flask import Blueprint
+from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
 
 bp = Blueprint('update_service', __name__)
 
@@ -31,6 +31,24 @@ def update_service():
             }
         }
     })
+
+
+@bp.route('/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate', methods=['POST'])
+def simple_update():
+    data = request.get_json() or {}
+    image_uri = data.get('ImageURI')
+    if not image_uri:
+        return bad_request_response('ImageURI is required')
+    targets = data.get('Targets', [])
+    db = get_db()
+    new_version = image_uri.rstrip('/').split('/')[-1]
+    if targets:
+        for target in targets:
+            fw_id = target.rstrip('/').split('/')[-1]
+            if db.execute('SELECT id FROM firmware_inventory WHERE id=?', (fw_id,)).fetchone():
+                db.execute('UPDATE firmware_inventory SET version=? WHERE id=?', (new_version, fw_id))
+    db.commit()
+    return no_content_response()
 
 
 @bp.route('/redfish/v1/UpdateService/FirmwareInventory/')

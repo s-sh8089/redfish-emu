@@ -785,11 +785,26 @@ VQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7
     db.commit()
 
 
+def _migrate_tables(db):
+    migrations = [
+        'ALTER TABLE systems ADD COLUMN secure_boot_enable INTEGER DEFAULT 0',
+        'ALTER TABLE systems ADD COLUMN bios_attributes TEXT',
+        'ALTER TABLE managers ADD COLUMN network_protocol TEXT',
+    ]
+    for sql in migrations:
+        try:
+            db.execute(sql)
+        except Exception:
+            pass
+    db.commit()
+
+
 def init_db(app):
     db_path = app.config['DB_PATH']
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row
     _create_tables(db)
+    _migrate_tables(db)
     _seed_data(db)
     db.close()

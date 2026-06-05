@@ -120,7 +120,9 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/Systems/` |
 | GET, PATCH | `/redfish/v1/Systems/system` |
-| GET | `/redfish/v1/Systems/system/Bios/` |
+| **POST** | `/redfish/v1/Systems/system/Actions/ComputerSystem.Reset` |
+| GET, PATCH | `/redfish/v1/Systems/system/Bios/` |
+| **GET, PATCH** | `/redfish/v1/Systems/system/SecureBoot/` |
 | GET | `/redfish/v1/Systems/system/Processors/` |
 | GET | `/redfish/v1/Systems/system/Processors/{id}/` |
 | GET | `/redfish/v1/Systems/system/Memory/` |
@@ -136,9 +138,11 @@ docker compose up --build
 | GET | `/redfish/v1/Systems/system/PCIeDevices/{id}/` |
 | GET | `/redfish/v1/Systems/system/LogServices/` |
 | GET | `/redfish/v1/Systems/system/LogServices/EventLog/` |
+| **POST** | `/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog` |
 | GET | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/` |
 | GET | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/{id}/` |
 | GET | `/redfish/v1/Systems/system/LogServices/SEL/` |
+| **POST** | `/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog` |
 | GET | `/redfish/v1/Systems/system/LogServices/SEL/Entries/` |
 | GET | `/redfish/v1/Systems/system/LogServices/SEL/Entries/{id}/` |
 
@@ -148,6 +152,7 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/Chassis/` |
 | GET | `/redfish/v1/Chassis/{id}/` |
+| **POST** | `/redfish/v1/Chassis/{id}/Actions/Chassis.Reset` |
 | GET | `/redfish/v1/Chassis/{id}/Assembly/` |
 | GET | `/redfish/v1/Chassis/{id}/Drive/` |
 | GET | `/redfish/v1/Chassis/{id}/Drive/{driveId}/` |
@@ -169,16 +174,18 @@ docker compose up --build
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/Managers/` |
-| GET | `/redfish/v1/Managers/bmc/` |
+| **GET, PATCH** | `/redfish/v1/Managers/bmc/` |
+| **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.Reset` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/VLANs/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/` |
+| **POST** | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/ManagerDiagnosticData/` |
 | GET | `/redfish/v1/Managers/bmc/ManagerDiagnosticData/GooglegRPCStatistics` |
-| GET | `/redfish/v1/Managers/bmc/NetworkProtocol/` |
+| GET, PATCH | `/redfish/v1/Managers/bmc/NetworkProtocol/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/Truststore/Certificates/` |
@@ -199,6 +206,7 @@ docker compose up --build
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/UpdateService/` |
+| **POST** | `/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/{id}/` |
 
@@ -262,6 +270,185 @@ curl -s -X POST http://localhost:8008/redfish/v1/AccountService/Accounts/ \
     "Password": "newpassword",
     "RoleId": "ReadOnly"
   }'
+```
+
+### 電源・リセット操作
+
+`ResetType` で操作の種類を指定します。
+
+#### サーバー電源操作
+
+| ResetType | 結果 |
+|---|---|
+| `On` / `ForceOn` / `GracefulRestart` / `ForceRestart` / `Nmi` | PowerState → `On` |
+| `ForceOff` / `GracefulShutdown` | PowerState → `Off` |
+| `PushPowerButton` | 現在の状態をトグル |
+
+```bash
+# 強制電源断
+curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
+  -H "Content-Type: application/json" \
+  -d '{"ResetType": "ForceOff"}'
+
+# 電源投入
+curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
+  -H "Content-Type: application/json" \
+  -d '{"ResetType": "On"}'
+```
+
+#### BMC リセット
+
+`GracefulRestart` または `ForceRestart` を指定します。
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/Actions/Manager.Reset \
+  -H "Content-Type: application/json" \
+  -d '{"ResetType": "GracefulRestart"}'
+```
+
+#### シャーシリセット
+
+`On` / `ForceOff` / `PowerCycle` を指定します。
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/Chassis/chassis1/Actions/Chassis.Reset \
+  -H "Content-Type: application/json" \
+  -d '{"ResetType": "PowerCycle"}'
+```
+
+成功時はいずれも `204 No Content` が返ります。
+
+### BMC 日時設定
+
+`DateTime`（ISO 8601 形式）と `DateTimeLocalOffset`（`+HH:MM` / `-HH:MM` 形式）を個別または同時に変更できます。
+
+```bash
+# 日時とタイムゾーンオフセットを同時に変更
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "DateTime": "2025-01-15T09:00:00+09:00",
+    "DateTimeLocalOffset": "+09:00"
+  }'
+
+# DateTime のみ変更（DateTimeLocalOffset は現在値を維持）
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/ \
+  -H "Content-Type: application/json" \
+  -d '{"DateTime": "2025-06-01T00:00:00Z"}'
+```
+
+PATCH 後は指定した値が GET のレスポンスに反映されます。  
+不正なフォーマットを指定した場合は `400 Bad Request` が返ります。
+
+| フィールド | 形式例 | バリデーション |
+|---|---|---|
+| `DateTime` | `2025-01-15T09:00:00+09:00` | ISO 8601 準拠 |
+| `DateTimeLocalOffset` | `+09:00` / `-05:00` | `+HH:MM` または `-HH:MM` |
+
+### ファームウェア更新
+
+`ImageURI`（必須）と `Targets`（対象ファームウェアの `@odata.id`）を指定します。  
+`Targets` に指定したファームウェアのバージョンが `ImageURI` の末尾パスで更新されます。
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ImageURI": "http://downloads.example.com/firmware/2.5.0",
+    "Targets": ["/redfish/v1/UpdateService/FirmwareInventory/BIOS/"]
+  }'
+```
+
+成功時は `204 No Content` が返ります。
+
+### ログクリア
+
+各 LogService のログエントリを全件削除します。
+
+```bash
+# System EventLog
+curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog \
+  -H "Content-Type: application/json" -d '{}'
+
+# System SEL
+curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog \
+  -H "Content-Type: application/json" -d '{}'
+
+# BMC RedfishLog
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+成功時はいずれも `204 No Content` が返ります。
+
+### Secure Boot
+
+```bash
+# 現在の状態を確認
+curl -s http://localhost:8008/redfish/v1/Systems/system/SecureBoot/
+
+# 有効化
+curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/SecureBoot/ \
+  -H "Content-Type: application/json" \
+  -d '{"SecureBootEnable": true}'
+
+# 無効化
+curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/SecureBoot/ \
+  -H "Content-Type: application/json" \
+  -d '{"SecureBootEnable": false}'
+```
+
+### BIOS 設定変更
+
+`Attributes` オブジェクトで変更したいキーのみ指定します（部分更新）。
+
+```bash
+# 現在の設定を確認
+curl -s http://localhost:8008/redfish/v1/Systems/system/Bios/
+
+# BootMode を Legacy に変更
+curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/Bios/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Attributes": {
+      "BootMode": "Legacy",
+      "QuietBoot": false
+    }
+  }'
+```
+
+初期の Attributes:
+
+| キー | デフォルト値 |
+|---|---|
+| `BootMode` | `"Uefi"` |
+| `NicBoot1` | `"NetworkBoot"` |
+| `NicBoot2` | `"Disabled"` |
+| `QuietBoot` | `true` |
+| `SriovGlobalEnable` | `"Disabled"` |
+
+### ネットワーク設定変更
+
+`HTTP` / `HTTPS` / `SSH` / `IPMI` / `NTP` のいずれかを指定して部分更新します。
+
+```bash
+# 現在の設定を確認
+curl -s http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/
+
+# SSH ポートを変更
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
+  -H "Content-Type: application/json" \
+  -d '{"SSH": {"Port": 2222}}'
+
+# NTP サーバーを変更
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
+  -H "Content-Type: application/json" \
+  -d '{"NTP": {"NTPServers": ["ntp1.example.com", "ntp2.example.com"]}}'
+
+# HTTP を無効化
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
+  -H "Content-Type: application/json" \
+  -d '{"HTTP": {"ProtocolEnabled": false}}'
 ```
 
 ### Webhook アラート通知
@@ -379,7 +566,7 @@ redfish-emu/
 ├── app/
 │   ├── __init__.py          # Flask app factory
 │   ├── config.py            # 設定 (DB_PATH など)
-│   ├── database.py          # SQLite 初期化・シードデータ
+│   ├── database.py          # SQLite 初期化・マイグレーション・シードデータ
 │   ├── helpers.py           # レスポンス共通関数
 │   ├── event_dispatcher.py  # Webhook 配信ロジック
 │   └── routes/              # Blueprint (リソース単位)
