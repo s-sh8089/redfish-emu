@@ -1,5 +1,6 @@
 import os
 from flask import Flask
+from flask_cors import CORS
 from .config import Config
 from .database import init_db, close_db
 from .helpers import not_found_response, method_not_allowed_response, json_response
@@ -13,6 +14,7 @@ from .routes import (
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    CORS(app)
 
     os.makedirs(os.path.dirname(os.path.abspath(app.config['DB_PATH'])), exist_ok=True)
     init_db(app)
