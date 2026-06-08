@@ -380,6 +380,23 @@ def thermal_fan(chassis_id, fan_name):
     })
 
 
+@bp.route('/redfish/v1/Chassis/<chassis_id>/PowerSubsystem/')
+@bp.route('/redfish/v1/Chassis/<chassis_id>/PowerSubsystem')
+def power_subsystem(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/{chassis_id}/PowerSubsystem',
+        '@odata.type': '#PowerSubsystem.v1_1_0.PowerSubsystem',
+        'Id': 'PowerSubsystem',
+        'Name': 'Power Subsystem',
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
+        'PowerSupplies': {'@odata.id': f'{BASE}/{chassis_id}/PowerSubsystem/PowerSupplies'},
+        'PowerAllocationWatts': 1500.0
+    })
+
+
 @bp.route('/redfish/v1/Chassis/<chassis_id>/PowerSubsystem/PowerSupplies')
 def power_supplies_collection(chassis_id):
     db = get_db()

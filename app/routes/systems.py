@@ -213,6 +213,22 @@ def bios():
     })
 
 
+@bp.route('/redfish/v1/Systems/system/Bios/Actions/Bios.ResetBios', methods=['POST'])
+def bios_reset():
+    db = get_db()
+    db.execute('UPDATE systems SET bios_attributes=NULL WHERE id="system"')
+    db.commit()
+    return no_content_response()
+
+
+@bp.route('/redfish/v1/Systems/system/Bios/Actions/Bios.ChangePassword', methods=['POST'])
+def bios_change_password():
+    data = request.get_json() or {}
+    if 'PasswordName' not in data or 'NewPassword' not in data:
+        return bad_request_response('PasswordName and NewPassword are required.')
+    return no_content_response()
+
+
 @bp.route('/redfish/v1/Systems/system/Processors/')
 def processors():
     db = get_db()
@@ -357,7 +373,58 @@ def storage(storage_id):
         'Name': row['id'],
         'Drives': drive_members,
         'Drives@odata.count': len(drive_members),
+        'Controllers': {'@odata.id': f'{BASE}/system/Storage/{storage_id}/Controllers/'},
+        'Volumes': {'@odata.id': f'{BASE}/system/Storage/{storage_id}/Volumes/'},
         'Status': {'State': row['status_state'], 'Health': row['status_health']}
+    })
+
+
+@bp.route('/redfish/v1/Systems/system/Storage/<storage_id>/Controllers/')
+def storage_controllers(storage_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM storage WHERE id=? AND system_id="system"', (storage_id,)).fetchone():
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/system/Storage/{storage_id}/Controllers/',
+        '@odata.type': '#StorageControllerCollection.StorageControllerCollection',
+        'Name': 'Storage Controller Collection',
+        'Members@odata.count': 1,
+        'Members': [{'@odata.id': f'{BASE}/system/Storage/{storage_id}/Controllers/0/'}]
+    })
+
+
+@bp.route('/redfish/v1/Systems/system/Storage/<storage_id>/Controllers/<ctrl_id>/')
+def storage_controller(storage_id, ctrl_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM storage WHERE id=? AND system_id="system"', (storage_id,)).fetchone():
+        return not_found_response()
+    if ctrl_id != '0':
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/system/Storage/{storage_id}/Controllers/{ctrl_id}/',
+        '@odata.type': '#StorageController.v1_7_0.StorageController',
+        'Id': ctrl_id,
+        'Name': 'Storage Controller 0',
+        'Manufacturer': 'Dell Inc.',
+        'Model': 'PERC H755',
+        'FirmwareVersion': '1.0.0',
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
+        'SupportedControllerProtocols': ['PCIe'],
+        'SupportedDeviceProtocols': ['SAS', 'SATA']
+    })
+
+
+@bp.route('/redfish/v1/Systems/system/Storage/<storage_id>/Volumes/')
+def volumes(storage_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM storage WHERE id=? AND system_id="system"', (storage_id,)).fetchone():
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/system/Storage/{storage_id}/Volumes/',
+        '@odata.type': '#VolumeCollection.VolumeCollection',
+        'Name': 'Volume Collection',
+        'Members@odata.count': 0,
+        'Members': []
     })
 
 
@@ -394,6 +461,36 @@ def system_ethernet_interfaces():
         'Description': 'List of Ethernet Interfaces for this System',
         'Members@odata.count': len(members),
         'Members': members
+    })
+
+
+@bp.route('/redfish/v1/Systems/system/EthernetInterfaces/<iface_id>/')
+def system_ethernet_interface(iface_id):
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM ethernet_interfaces WHERE id=? AND parent_type='system'",
+        (iface_id,)
+    ).fetchone()
+    if not row:
+        return not_found_response()
+    ipv4 = json.loads(row['ipv4_addresses']) if row['ipv4_addresses'] else []
+    ipv4_static = json.loads(row['ipv4_static_addresses']) if row['ipv4_static_addresses'] else []
+    ipv6 = json.loads(row['ipv6_addresses']) if row['ipv6_addresses'] else []
+    dns = json.loads(row['name_servers']) if row['name_servers'] else []
+    return json_response({
+        '@odata.id': f'{BASE}/system/EthernetInterfaces/{iface_id}/',
+        '@odata.type': '#EthernetInterface.v1_12_0.EthernetInterface',
+        'Id': iface_id,
+        'Name': iface_id,
+        'MACAddress': row['mac_address'],
+        'InterfaceEnabled': bool(row['interface_enabled']),
+        'LinkStatus': row['link_status'],
+        'SpeedMbps': row['speed_mbps'],
+        'IPv4Addresses': ipv4,
+        'IPv4StaticAddresses': ipv4_static,
+        'IPv6Addresses': ipv6,
+        'NameServers': dns,
+        'Status': {'State': row['status_state'], 'Health': row['status_health']}
     })
 
 

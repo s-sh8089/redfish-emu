@@ -525,3 +525,78 @@ def truststore_certificates():
         'Members@odata.count': 0,
         'Members': []
     })
+
+
+@bp.route('/redfish/v1/Managers/bmc/HostInterfaces/')
+def host_interfaces():
+    return json_response({
+        '@odata.id': f'{BASE}/bmc/HostInterfaces/',
+        '@odata.type': '#HostInterfaceCollection.HostInterfaceCollection',
+        'Name': 'Host Interface Collection',
+        'Description': 'List of Host Interfaces',
+        'Members@odata.count': 1,
+        'Members': [{'@odata.id': f'{BASE}/bmc/HostInterfaces/0/'}]
+    })
+
+
+@bp.route('/redfish/v1/Managers/bmc/HostInterfaces/<iface_id>/')
+def host_interface(iface_id):
+    if iface_id != '0':
+        from ..helpers import not_found_response
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/bmc/HostInterfaces/{iface_id}/',
+        '@odata.type': '#HostInterface.v1_3_0.HostInterface',
+        'Id': iface_id,
+        'Name': 'Host Interface 0',
+        'Description': 'KCS Host Interface',
+        'HostInterfaceType': 'NetworkHostInterface',
+        'InterfaceEnabled': True,
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
+        'AuthenticationModes': ['BasicAuth', 'RedfishSessionAuth'],
+        'CredentialBootstrapping': {'EnableAfterReset': False, 'Enabled': False}
+    })
+
+
+@bp.route('/redfish/v1/Managers/bmc/SerialInterfaces/')
+def serial_interfaces():
+    return json_response({
+        '@odata.id': f'{BASE}/bmc/SerialInterfaces/',
+        '@odata.type': '#SerialInterfaceCollection.SerialInterfaceCollection',
+        'Name': 'Serial Interface Collection',
+        'Description': 'List of Serial Interfaces',
+        'Members@odata.count': 1,
+        'Members': [{'@odata.id': f'{BASE}/bmc/SerialInterfaces/1/'}]
+    })
+
+
+@bp.route('/redfish/v1/Managers/bmc/SerialInterfaces/<iface_id>/')
+def serial_interface(iface_id):
+    if iface_id != '1':
+        from ..helpers import not_found_response
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/bmc/SerialInterfaces/{iface_id}/',
+        '@odata.type': '#SerialInterface.v1_2_0.SerialInterface',
+        'Id': iface_id,
+        'Name': 'Serial Interface 1',
+        'Description': 'Management Serial Interface',
+        'InterfaceEnabled': True,
+        'SignalType': 'Rs232',
+        'BitRate': '115200',
+        'Parity': 'None',
+        'DataBits': '8',
+        'StopBits': '1',
+        'FlowControl': 'None',
+        'ConnectorType': 'RJ45',
+        'Status': {'State': 'Enabled', 'Health': 'OK'}
+    })
+
+
+@bp.route('/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover', methods=['POST'])
+def manager_force_failover():
+    data = request.get_json() or {}
+    new_manager = data.get('NewManager', {})
+    if not new_manager:
+        return bad_request_response('NewManager is required.')
+    return no_content_response()

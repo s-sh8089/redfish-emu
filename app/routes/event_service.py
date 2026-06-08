@@ -1,10 +1,11 @@
 import json
+import queue
 import uuid
 from datetime import datetime, timezone
-from flask import Blueprint, request, current_app
+from flask import Blueprint, request, current_app, Response, stream_with_context
 from ..database import get_db
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
-from ..event_dispatcher import dispatch_event
+from ..event_dispatcher import dispatch_event, add_sse_client, remove_sse_client
 
 bp = Blueprint('event_service', __name__)
 
@@ -33,6 +34,7 @@ def event_service():
             'ResourceType': True,
             'SubordinateResources': True
         },
+        'ServerSentEventUri': '/redfish/v1/EventService/SSE',
         'Status': {'State': 'Enabled', 'Health': 'OK'},
         'Subscriptions': {'@odata.id': '/redfish/v1/EventService/Subscriptions/'},
         'Actions': {
@@ -57,34 +59,56 @@ def subscriptions():
             'Members@odata.count': len(members),
             'Members': members
         })
-    else:
-        data = request.get_json()
-        if not data or 'Destination' not in data:
-            return bad_request_response('Destination is required.')
-        sub_id = str(uuid.uuid4()).replace('-', '')[:12]
-        db.execute(
-            'INSERT INTO event_subscriptions (id, destination, context, protocol, event_types, origin_resources) VALUES (?,?,?,?,?,?)',
-            (sub_id, data['Destination'], data.get('Context', ''),
-             data.get('Protocol', 'Redfish'),
-             json.dumps(data.get('EventTypes', [])),
-             json.dumps(data.get('OriginResources', [])))
-        )
-        db.commit()
-        row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
-        return created_response(
-            _subscription_to_dict(row),
-            location=f'/redfish/v1/EventService/Subscriptions/{sub_id}/'
-        )
+
+    data = request.get_json()
+    if not data or 'Destination' not in data:
+        return bad_request_response('Destination is required.')
+    sub_id = str(uuid.uuid4()).replace('-', '')[:12]
+    db.execute(
+        'INSERT INTO event_subscriptions (id, destination, context, protocol, event_types, origin_resources) VALUES (?,?,?,?,?,?)',
+        (sub_id, data['Destination'], data.get('Context', ''),
+         data.get('Protocol', 'Redfish'),
+         json.dumps(data.get('EventTypes', [])),
+         json.dumps(data.get('OriginResources', [])))
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
+    return created_response(
+        _subscription_to_dict(row),
+        location=f'/redfish/v1/EventService/Subscriptions/{sub_id}/'
+    )
 
 
-@bp.route('/redfish/v1/EventService/Subscriptions/<sub_id>/', methods=['GET', 'DELETE'])
+@bp.route('/redfish/v1/EventService/Subscriptions/<sub_id>/', methods=['GET', 'PATCH', 'DELETE'])
 def subscription(sub_id):
     db = get_db()
     row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
     if not row:
         return not_found_response()
+
     if request.method == 'GET':
         return json_response(_subscription_to_dict(row))
+
+    elif request.method == 'PATCH':
+        data = request.get_json() or {}
+        fields = []
+        values = []
+        if 'Context' in data:
+            fields.append('context=?')
+            values.append(data['Context'])
+        if 'EventTypes' in data:
+            fields.append('event_types=?')
+            values.append(json.dumps(data['EventTypes']))
+        if 'OriginResources' in data:
+            fields.append('origin_resources=?')
+            values.append(json.dumps(data['OriginResources']))
+        if fields:
+            values.append(sub_id)
+            db.execute(f'UPDATE event_subscriptions SET {", ".join(fields)} WHERE id=?', values)
+            db.commit()
+        row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
+        return json_response(_subscription_to_dict(row))
+
     else:
         db.execute('DELETE FROM event_subscriptions WHERE id=?', (sub_id,))
         db.commit()
@@ -116,6 +140,34 @@ def submit_test_event():
 
     dispatch_event(current_app._get_current_object(), event_payload)
     return no_content_response()
+
+
+@bp.route('/redfish/v1/EventService/SSE')
+def sse_stream():
+    def generate():
+        q = add_sse_client()
+        try:
+            yield ': Redfish SSE stream\n\n'
+            while True:
+                try:
+                    event = q.get(timeout=30)
+                    yield f'data: {json.dumps(event)}\n\n'
+                except queue.Empty:
+                    yield ': heartbeat\n\n'
+        except GeneratorExit:
+            pass
+        finally:
+            remove_sse_client(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'OData-Version': '4.0'
+        }
+    )
 
 
 def _subscription_to_dict(row):
