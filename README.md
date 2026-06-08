@@ -65,6 +65,36 @@ docker compose down
 
 ---
 
+## 認証
+
+全エンドポイント（サービスルート `GET /redfish/v1/` とログイン `POST /redfish/v1/SessionService/Sessions/` を除く）は認証が必要です。
+
+### 認証方式
+
+| 方式 | ヘッダー / 方法 |
+|---|---|
+| セッショントークン | `X-Auth-Token: <token>` |
+| Basic 認証 | `Authorization: Basic <base64>` |
+
+セッションタイムアウトは **30 分**。タイムアウト後はセッションが自動削除されます。
+
+### アカウントロックアウト
+
+ログイン失敗が **3 回** を超えるとアカウントがロックされます。  
+管理者が `PATCH /redfish/v1/AccountService/Accounts/{id}/` で `{"Locked": false}` を送信するとリセットできます。
+
+### 初期アカウント
+
+| ユーザー名 | パスワード | ロール |
+|---|---|---|
+| admin | password | Administrator |
+| operator1 | password | Operator |
+| readonly1 | password | ReadOnly |
+
+> パスワードは bcrypt でハッシュ化されて保存されます。
+
+---
+
 ## データの永続化
 
 SQLite データベースはホストの `./data/` ディレクトリに保存されます。  
@@ -77,6 +107,16 @@ docker compose down
 rm -f data/redfish.db
 docker compose up --build
 ```
+
+---
+
+## 環境変数
+
+| 変数名 | デフォルト | 説明 |
+|---|---|---|
+| `DB_PATH` | `data/redfish.db` | SQLite DBファイルパス |
+| `SECRET_KEY` | `redfish-emu-secret-key` | Flask シークレットキー |
+| `CORS_ORIGINS` | `*` | 許可する CORS オリジン（カンマ区切り） |
 
 ---
 
@@ -122,6 +162,8 @@ docker compose up --build
 | GET, PATCH | `/redfish/v1/Systems/system` |
 | **POST** | `/redfish/v1/Systems/system/Actions/ComputerSystem.Reset` |
 | GET, PATCH | `/redfish/v1/Systems/system/Bios/` |
+| **POST** | `/redfish/v1/Systems/system/Bios/Actions/Bios.ResetBios` |
+| **POST** | `/redfish/v1/Systems/system/Bios/Actions/Bios.ChangePassword` |
 | **GET, PATCH** | `/redfish/v1/Systems/system/SecureBoot/` |
 | GET | `/redfish/v1/Systems/system/Processors/` |
 | GET | `/redfish/v1/Systems/system/Processors/{id}/` |
@@ -131,7 +173,11 @@ docker compose up --build
 | GET | `/redfish/v1/Systems/system/Storage/` |
 | GET | `/redfish/v1/Systems/system/Storage/{id}/` |
 | GET | `/redfish/v1/Systems/system/Storage/{id}/Drive/{driveId}/` |
+| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Controllers/` |
+| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Controllers/{ctrlId}/` |
+| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Volumes/` |
 | GET | `/redfish/v1/Systems/system/EthernetInterfaces/` |
+| **GET** | `/redfish/v1/Systems/system/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Systems/system/FabricAdapters/` |
 | GET | `/redfish/v1/Systems/system/FabricAdapters/{id}/` |
 | GET | `/redfish/v1/Systems/system/PCIeDevices/` |
@@ -164,6 +210,7 @@ docker compose up --build
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem` |
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem/Fans` |
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem/Fans/{fanName}/` |
+| **GET** | `/redfish/v1/Chassis/{id}/PowerSubsystem/` |
 | GET | `/redfish/v1/Chassis/{id}/PowerSubsystem/PowerSupplies` |
 | GET | `/redfish/v1/Chassis/{id}/PowerSubsystem/PowerSupplies/{psuId}` |
 | GET | `/redfish/v1/Chassis/{id}/PCIeSlots/` |
@@ -176,6 +223,7 @@ docker compose up --build
 | GET | `/redfish/v1/Managers/` |
 | **GET, PATCH** | `/redfish/v1/Managers/bmc/` |
 | **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.Reset` |
+| **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover` |
 | **GET, POST** | `/redfish/v1/Managers/bmc/VirtualMedia/` |
 | **GET** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/` |
 | **POST** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.InsertMedia` |
@@ -183,6 +231,10 @@ docker compose up --build
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/VLANs/` |
+| **GET** | `/redfish/v1/Managers/bmc/HostInterfaces/` |
+| **GET** | `/redfish/v1/Managers/bmc/HostInterfaces/{id}/` |
+| **GET** | `/redfish/v1/Managers/bmc/SerialInterfaces/` |
+| **GET** | `/redfish/v1/Managers/bmc/SerialInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/` |
 | **POST** | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog` |
@@ -191,6 +243,7 @@ docker compose up --build
 | GET | `/redfish/v1/Managers/bmc/ManagerDiagnosticData/GooglegRPCStatistics` |
 | GET, PATCH | `/redfish/v1/Managers/bmc/NetworkProtocol/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
+| **POST** | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/Truststore/Certificates/` |
 
@@ -202,30 +255,49 @@ docker compose up --build
 | GET | `/redfish/v1/EventService/Subscriptions/` |
 | POST | `/redfish/v1/EventService/Subscriptions/` |
 | GET | `/redfish/v1/EventService/Subscriptions/{id}/` |
+| **PATCH** | `/redfish/v1/EventService/Subscriptions/{id}/` |
 | DELETE | `/redfish/v1/EventService/Subscriptions/{id}/` |
 | POST | `/redfish/v1/EventService/Actions/EventService.SubmitTestEvent` |
+| **GET** | `/redfish/v1/EventService/SSE` |
 
 ### Update Service
 
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/UpdateService/` |
+| **POST** | `/redfish/v1/UpdateService/update` |
 | **POST** | `/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/{id}/` |
+| **GET** | `/redfish/v1/UpdateService/SoftwareInventory/` |
+| **GET** | `/redfish/v1/UpdateService/SoftwareInventory/{id}/` |
 
-### その他のサービス
+### Task Service
 
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/TaskService/` |
 | GET | `/redfish/v1/TaskService/Tasks/` |
+| **GET** | `/redfish/v1/TaskService/Tasks/{id}/` |
+| **DELETE** | `/redfish/v1/TaskService/Tasks/{id}/` |
+
+### Certificate Service
+
+| Method | Path |
+|---|---|
+| GET | `/redfish/v1/CertificateService/` |
+| GET | `/redfish/v1/CertificateService/CertificateLocations/` |
+| **POST** | `/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR` |
+| **POST** | `/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate` |
+
+### その他のサービス
+
+| Method | Path |
+|---|---|
 | GET | `/redfish/v1/TelemetryService/` |
 | GET | `/redfish/v1/TelemetryService/MetricReportDefinitions/` |
 | GET | `/redfish/v1/TelemetryService/MetricReports/` |
 | GET | `/redfish/v1/TelemetryService/Triggers/` |
-| GET | `/redfish/v1/CertificateService/` |
-| GET | `/redfish/v1/CertificateService/CertificateLocations/` |
 | GET | `/redfish/v1/JsonSchemas/` |
 | GET | `/redfish/v1/JsonSchemas/{id}/` |
 | GET | `/redfish/v1/Registries/` |
@@ -236,6 +308,8 @@ docker compose up --build
 | GET | `/redfish/v1/AggregationService/AggregationSources` |
 | GET | `/redfish/v1/AggregationService/AggregationSources/{id}` |
 
+> **太字** は今回追加または更新されたエンドポイントです。
+
 ---
 
 ## 使用例
@@ -243,19 +317,28 @@ docker compose up --build
 ### セッション作成
 
 ```bash
-curl -s -X POST http://localhost:8008/redfish/v1/SessionService/Sessions/ \
+TOKEN=$(curl -s -X POST http://localhost:8008/redfish/v1/SessionService/Sessions/ \
   -H "Content-Type: application/json" \
   -d '{"UserName": "admin", "Password": "password"}' \
-  -D -
+  -D - | grep -i x-auth-token | awk '{print $2}' | tr -d '\r')
+
+echo "Token: $TOKEN"
 ```
 
-レスポンスヘッダの `X-Auth-Token` を以後のリクエストに使用できます。
+以降のリクエストは `-H "X-Auth-Token: $TOKEN"` を付加します。
+
+### Basic 認証
+
+```bash
+curl -s -u admin:password http://localhost:8008/redfish/v1/Systems/system
+```
 
 ### Boot デバイスの変更
 
 ```bash
 curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
     "Boot": {
       "BootSourceOverrideTarget": "Pxe",
@@ -266,14 +349,26 @@ curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system \
 
 ### ユーザーアカウントの作成
 
+パスワードは 8〜20 文字で指定してください。bcrypt でハッシュ化されて保存されます。
+
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/AccountService/Accounts/ \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
     "UserName": "newuser",
     "Password": "newpassword",
     "RoleId": "ReadOnly"
   }'
+```
+
+### ロックアウト解除
+
+```bash
+curl -s -X PATCH http://localhost:8008/redfish/v1/AccountService/Accounts/admin/ \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{"Locked": false}'
 ```
 
 ### 電源・リセット操作
@@ -289,240 +384,119 @@ curl -s -X POST http://localhost:8008/redfish/v1/AccountService/Accounts/ \
 | `PushPowerButton` | 現在の状態をトグル |
 
 ```bash
-# 強制電源断
 curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{"ResetType": "ForceOff"}'
-
-# 電源投入
-curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/Actions/ComputerSystem.Reset \
-  -H "Content-Type: application/json" \
-  -d '{"ResetType": "On"}'
 ```
 
 #### BMC リセット
 
-`GracefulRestart` または `ForceRestart` を指定します。
-
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/Actions/Manager.Reset \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{"ResetType": "GracefulRestart"}'
 ```
 
 #### シャーシリセット
 
-`On` / `ForceOff` / `PowerCycle` を指定します。
-
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/Chassis/chassis1/Actions/Chassis.Reset \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{"ResetType": "PowerCycle"}'
 ```
 
-成功時はいずれも `204 No Content` が返ります。
-
-### BMC 日時設定
-
-`DateTime`（ISO 8601 形式）と `DateTimeLocalOffset`（`+HH:MM` / `-HH:MM` 形式）を個別または同時に変更できます。
-
-```bash
-# 日時とタイムゾーンオフセットを同時に変更
-curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "DateTime": "2025-01-15T09:00:00+09:00",
-    "DateTimeLocalOffset": "+09:00"
-  }'
-
-# DateTime のみ変更（DateTimeLocalOffset は現在値を維持）
-curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/ \
-  -H "Content-Type: application/json" \
-  -d '{"DateTime": "2025-06-01T00:00:00Z"}'
-```
-
-PATCH 後は指定した値が GET のレスポンスに反映されます。  
-不正なフォーマットを指定した場合は `400 Bad Request` が返ります。
-
-| フィールド | 形式例 | バリデーション |
-|---|---|---|
-| `DateTime` | `2025-01-15T09:00:00+09:00` | ISO 8601 準拠 |
-| `DateTimeLocalOffset` | `+09:00` / `-05:00` | `+HH:MM` または `-HH:MM` |
-
-### ISO イメージのリモートマウント（VirtualMedia）
-
-BMC の VirtualMedia 機能を使って、HTTP/HTTPS で公開した ISO イメージをリモートマウントできます。  
-OS の再インストールや LiveCD 起動に使用します。
-
-初期スロット: `CD`（CD/DVD）と `USB`（USB）の 2 つが登録されています。
-
-#### ISO をマウントする
-
-```bash
-curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.InsertMedia \
-  -H "Content-Type: application/json" \
-  -d '{
-    "Image": "http://192.168.1.10/iso/ubuntu-24.04-server.iso",
-    "TransferProtocolType": "HTTP",
-    "WriteProtected": true
-  }'
-```
-
-| フィールド | 必須 | 説明 |
-|---|---|---|
-| `Image` | 必須 | ISO イメージの URI |
-| `TransferProtocolType` | 任意 | `HTTP` / `HTTPS` / `TFTP` など（デフォルト: `HTTP`） |
-| `WriteProtected` | 任意 | 書き込み保護（デフォルト: `true`） |
-
-#### マウント状態を確認する
-
-```bash
-curl -s http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/
-```
-
-| フィールド | マウント中 | 未マウント |
-|---|---|---|
-| `Inserted` | `true` | `false` |
-| `ConnectedVia` | `URI` | `NotConnected` |
-| `ImageName` | ファイル名 | `""` |
-
-#### ISO をアンマウントする
-
-```bash
-curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia \
-  -H "Content-Type: application/json" -d '{}'
-```
-
-未マウント状態で EjectMedia を呼ぶと `400 Bad Request` が返ります。
-
-#### スロットを追加する
-
-```bash
-curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "Name": "Virtual DVD",
-    "MediaTypes": ["DVD"]
-  }'
-```
-
-成功時は `201 Created` と新規リソースが返ります。
-
 ### ファームウェア更新
 
-`ImageURI`（必須）と `Targets`（対象ファームウェアの `@odata.id`）を指定します。  
-`Targets` に指定したファームウェアのバージョンが `ImageURI` の末尾パスで更新されます。
+#### HTTP Push（ファイルアップロード）
+
+```bash
+curl -s -X POST http://localhost:8008/redfish/v1/UpdateService/update \
+  -H "X-Auth-Token: $TOKEN" \
+  -F "file=@/path/to/firmware.bin"
+```
+
+成功時は `201 Created` とタスクへのリンクが返ります。
+
+#### SimpleUpdate
 
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
     "ImageURI": "http://downloads.example.com/firmware/2.5.0",
     "Targets": ["/redfish/v1/UpdateService/FirmwareInventory/BIOS/"]
   }'
 ```
 
-成功時は `204 No Content` が返ります。
+成功時は `202 Accepted` とタスクへの参照が返ります。
 
-### ログクリア
-
-各 LogService のログエントリを全件削除します。
+### タスク管理
 
 ```bash
-# System EventLog
-curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog \
-  -H "Content-Type: application/json" -d '{}'
+# タスク一覧
+curl -s -H "X-Auth-Token: $TOKEN" http://localhost:8008/redfish/v1/TaskService/Tasks/
 
-# System SEL
-curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog \
-  -H "Content-Type: application/json" -d '{}'
+# タスク詳細
+curl -s -H "X-Auth-Token: $TOKEN" http://localhost:8008/redfish/v1/TaskService/Tasks/{taskId}/
 
-# BMC RedfishLog
-curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog \
-  -H "Content-Type: application/json" -d '{}'
+# タスク削除
+curl -s -X DELETE -H "X-Auth-Token: $TOKEN" http://localhost:8008/redfish/v1/TaskService/Tasks/{taskId}/
 ```
 
-成功時はいずれも `204 No Content` が返ります。
-
-### Secure Boot
+### CSR 生成
 
 ```bash
-# 現在の状態を確認
-curl -s http://localhost:8008/redfish/v1/Systems/system/SecureBoot/
-
-# 有効化
-curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/SecureBoot/ \
+curl -s -X POST http://localhost:8008/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR \
   -H "Content-Type: application/json" \
-  -d '{"SecureBootEnable": true}'
-
-# 無効化
-curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/SecureBoot/ \
-  -H "Content-Type: application/json" \
-  -d '{"SecureBootEnable": false}'
-```
-
-### BIOS 設定変更
-
-`Attributes` オブジェクトで変更したいキーのみ指定します（部分更新）。
-
-```bash
-# 現在の設定を確認
-curl -s http://localhost:8008/redfish/v1/Systems/system/Bios/
-
-# BootMode を Legacy に変更
-curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/Bios/ \
-  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
-    "Attributes": {
-      "BootMode": "Legacy",
-      "QuietBoot": false
-    }
+    "CommonName": "bmc.example.com",
+    "Organization": ["Example Corp"],
+    "CertificateCollection": {"@odata.id": "/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/"}
   }'
 ```
 
-初期の Attributes:
-
-| キー | デフォルト値 |
-|---|---|
-| `BootMode` | `"Uefi"` |
-| `NicBoot1` | `"NetworkBoot"` |
-| `NicBoot2` | `"Disabled"` |
-| `QuietBoot` | `true` |
-| `SriovGlobalEnable` | `"Disabled"` |
-
-### ネットワーク設定変更
-
-`HTTP` / `HTTPS` / `SSH` / `IPMI` / `NTP` のいずれかを指定して部分更新します。
+### 証明書アップロード
 
 ```bash
-# 現在の設定を確認
-curl -s http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/
-
-# SSH ポートを変更
-curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/ \
   -H "Content-Type: application/json" \
-  -d '{"SSH": {"Port": 2222}}'
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{
+    "CertificateString": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+    "CertificateType": "PEM"
+  }'
+```
 
-# NTP サーバーを変更
-curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
-  -H "Content-Type: application/json" \
-  -d '{"NTP": {"NTPServers": ["ntp1.example.com", "ntp2.example.com"]}}'
+### SSE（Server-Sent Events）
 
-# HTTP を無効化
-curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/NetworkProtocol/ \
+```bash
+curl -s -N -H "X-Auth-Token: $TOKEN" http://localhost:8008/redfish/v1/EventService/SSE
+```
+
+接続後、`SubmitTestEvent` を呼ぶとリアルタイムでイベントが届きます。
+
+### Subscription PATCH
+
+```bash
+curl -s -X PATCH http://localhost:8008/redfish/v1/EventService/Subscriptions/{id}/ \
   -H "Content-Type: application/json" \
-  -d '{"HTTP": {"ProtocolEnabled": false}}'
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{"EventTypes": ["Alert", "StatusChange"]}'
 ```
 
 ### Webhook アラート通知
-
-サブスクリプションを登録すると、イベント発生時に指定した URL へ HTTP POST が送信されます。
 
 #### 1. 受け取り先 URL を登録する
 
 ```bash
 curl -s -X POST http://localhost:8008/redfish/v1/EventService/Subscriptions/ \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
     "Destination": "http://your-server/webhook",
     "Context": "my-context",
@@ -530,14 +504,13 @@ curl -s -X POST http://localhost:8008/redfish/v1/EventService/Subscriptions/ \
   }'
 ```
 
-`EventTypes` を省略すると全種類のイベントを受信します。複数のサブスクリプションを登録することもできます。
-
 #### 2. テストイベントを送信する
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" \
   -X POST http://localhost:8008/redfish/v1/EventService/Actions/EventService.SubmitTestEvent \
   -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
   -d '{
     "EventType": "Alert",
     "Severity": "Critical",
@@ -546,79 +519,98 @@ curl -s -o /dev/null -w "%{http_code}\n" \
   }'
 ```
 
-`204` が返れば成功です。登録済みのサブスクリプションに対してバックグラウンドで POST が送信されます。
-
-リクエストボディのフィールドはすべて省略可能です。
-
-| フィールド | デフォルト値 |
-|---|---|
-| `EventType` | `Alert` |
-| `Severity` | `OK` |
-| `Message` | `This is a test event.` |
-| `MessageId` | `Base.1.0.GeneralError` |
-| `MessageArgs` | `[]` |
-| `Context` | `""` |
-| `OriginOfCondition` | `/redfish/v1/` |
-
-#### 3. サブスクリプション一覧・削除
+### BMC 日時設定
 
 ```bash
-# 一覧
-curl -s http://localhost:8008/redfish/v1/EventService/Subscriptions/ | python3 -m json.tool
-
-# 削除
-curl -s -X DELETE http://localhost:8008/redfish/v1/EventService/Subscriptions/{id}/
+curl -s -X PATCH http://localhost:8008/redfish/v1/Managers/bmc/ \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{
+    "DateTime": "2025-01-15T09:00:00+09:00",
+    "DateTimeLocalOffset": "+09:00"
+  }'
 ```
 
-#### Webhook の POST ボディ例
+### ISO イメージのリモートマウント（VirtualMedia）
 
-```json
-{
-  "@odata.type": "#Event.v1_7_0.Event",
-  "Id": "a1b2c3d4",
-  "Name": "Test Event",
-  "Context": "my-context",
-  "Events": [
-    {
-      "EventType": "Alert",
-      "EventId": "a1b2c3d4",
-      "EventTimestamp": "2026-06-05T06:19:16+00:00",
-      "Severity": "Critical",
-      "Message": "CPU temperature exceeded critical threshold.",
-      "MessageId": "ThermalEvents.1.0.TemperatureAboveUpperCriticalThreshold",
-      "MessageArgs": [],
-      "OriginOfCondition": { "@odata.id": "/redfish/v1/" }
+```bash
+# ISO をマウントする
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.InsertMedia \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{
+    "Image": "http://192.168.1.10/iso/ubuntu-24.04-server.iso",
+    "TransferProtocolType": "HTTP",
+    "WriteProtected": true
+  }'
+
+# ISO をアンマウントする
+curl -s -X POST http://localhost:8008/redfish/v1/Managers/bmc/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{}'
+```
+
+### BIOS 設定変更
+
+```bash
+# BootMode を Legacy に変更
+curl -s -X PATCH http://localhost:8008/redfish/v1/Systems/system/Bios/ \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{
+    "Attributes": {
+      "BootMode": "Legacy",
+      "QuietBoot": false
     }
-  ]
-}
+  }'
+
+# BIOS をデフォルトにリセット
+curl -s -X POST http://localhost:8008/redfish/v1/Systems/system/Bios/Actions/Bios.ResetBios \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: $TOKEN" \
+  -d '{}'
 ```
 
 ---
 
+## OData クエリパラメータ
+
+コレクションエンドポイントは `$top` と `$skip` をサポートします。
+
+```bash
+# 最初の2件
+curl -s -H "X-Auth-Token: $TOKEN" "http://localhost:8008/redfish/v1/TaskService/Tasks/?$top=2"
+
+# 3件目以降
+curl -s -H "X-Auth-Token: $TOKEN" "http://localhost:8008/redfish/v1/TaskService/Tasks/?$skip=2"
+```
+
+---
+
+## レート制限
+
+デフォルトで **600 リクエスト/分** の制限が設定されています。  
+超過した場合は `429 Too Many Requests` が返ります。
+
+---
+
 ## 初期シードデータ
-
-起動時に以下のデータが自動投入されます。
-
-### アカウント
-
-| ユーザー名 | パスワード | ロール |
-|---|---|---|
-| admin | password | Administrator |
-| operator1 | password | Operator |
-| readonly1 | password | ReadOnly |
 
 ### ハードウェア構成（シミュレート対象）
 
 - **System:** Dell PowerEdge R750
 - **CPU:** Intel Xeon Gold 6338 × 2
 - **Memory:** 32GB RDIMM × 4 (合計 128GB)
-- **Storage:** 480GB SSD × 2 (Storage0/Drive0, Drive1)
+- **Storage:** 480GB SSD × 2 (Storage0/Drive0, Drive1) + StorageController 0
 - **Manager (BMC):** iDRAC9, FW: 2.71.71.71-711
 - **Chassis:** 1U RackMount (chassis1)
 - **Firmware:** BMC / BIOS / ME / CPLD
 - **温度センサー:** CPU1/CPU2/Inlet/Outlet
 - **ファン:** Fan1〜Fan6
 - **電源:** PSU1 / PSU2 (750W)
+- **HostInterface:** KCS (0)
+- **SerialInterface:** RS232 (1)
 
 ---
 
@@ -627,11 +619,12 @@ curl -s -X DELETE http://localhost:8008/redfish/v1/EventService/Subscriptions/{i
 ```
 redfish-emu/
 ├── app/
-│   ├── __init__.py          # Flask app factory
+│   ├── __init__.py          # Flask app factory (CORS・レート制限・認証ミドルウェア)
+│   ├── auth.py              # 認証・RBAC・ロックアウトロジック
 │   ├── config.py            # 設定 (DB_PATH など)
 │   ├── database.py          # SQLite 初期化・マイグレーション・シードデータ
-│   ├── helpers.py           # レスポンス共通関数
-│   ├── event_dispatcher.py  # Webhook 配信ロジック
+│   ├── helpers.py           # レスポンス共通関数 (ETag・ODataクエリ対応)
+│   ├── event_dispatcher.py  # Webhook 配信ロジック・SSE クライアント管理
 │   └── routes/              # Blueprint (リソース単位)
 │       ├── service_root.py
 │       ├── account_service.py

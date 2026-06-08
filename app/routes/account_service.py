@@ -3,6 +3,7 @@ import uuid
 from flask import Blueprint, request
 from ..database import get_db
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
+from ..auth import hash_password
 
 bp = Blueprint('account_service', __name__)
 
@@ -55,25 +56,29 @@ def accounts():
             'Members@odata.count': len(members),
             'Members': members
         })
-    else:
-        data = request.get_json()
-        if not data or 'UserName' not in data or 'Password' not in data or 'RoleId' not in data:
-            return bad_request_response('UserName, Password, RoleId are required.')
-        account_id = data['UserName']
-        existing = db.execute('SELECT id FROM accounts WHERE username=?', (account_id,)).fetchone()
-        if existing:
-            return bad_request_response('Account already exists.')
-        db.execute(
-            'INSERT INTO accounts (id, username, password, role_id, enabled, locked, password_change_required, description) VALUES (?,?,?,?,?,?,?,?)',
-            (account_id, data['UserName'], data['Password'], data['RoleId'],
-             1 if data.get('Enabled', True) else 0, 0, 0, data.get('Description', ''))
-        )
-        db.commit()
-        row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
-        return created_response(
-            _account_to_dict(row),
-            location=f'/redfish/v1/AccountService/Accounts/{account_id}/'
-        )
+
+    data = request.get_json()
+    if not data or 'UserName' not in data or 'Password' not in data or 'RoleId' not in data:
+        return bad_request_response('UserName, Password, RoleId are required.')
+    plain_pw = data['Password']
+    if len(plain_pw) < 8:
+        return bad_request_response('Password must be at least 8 characters.')
+    if len(plain_pw) > 20:
+        return bad_request_response('Password must be at most 20 characters.')
+    account_id = data['UserName']
+    if db.execute('SELECT id FROM accounts WHERE username=?', (account_id,)).fetchone():
+        return bad_request_response('Account already exists.')
+    db.execute(
+        'INSERT INTO accounts (id, username, password, role_id, enabled, locked, password_change_required, description) VALUES (?,?,?,?,?,?,?,?)',
+        (account_id, data['UserName'], hash_password(plain_pw), data['RoleId'],
+         1 if data.get('Enabled', True) else 0, 0, 0, data.get('Description', ''))
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
+    return created_response(
+        _account_to_dict(row),
+        location=f'/redfish/v1/AccountService/Accounts/{account_id}/'
+    )
 
 
 @bp.route('/redfish/v1/AccountService/Accounts/<account_id>/', methods=['GET', 'PATCH', 'DELETE'])
@@ -91,8 +96,13 @@ def account(account_id):
         fields = []
         values = []
         if 'Password' in data:
+            plain_pw = data['Password']
+            if len(plain_pw) < 8:
+                return bad_request_response('Password must be at least 8 characters.')
+            if len(plain_pw) > 20:
+                return bad_request_response('Password must be at most 20 characters.')
             fields.append('password=?')
-            values.append(data['Password'])
+            values.append(hash_password(plain_pw))
         if 'RoleId' in data:
             fields.append('role_id=?')
             values.append(data['RoleId'])
@@ -102,6 +112,9 @@ def account(account_id):
         if 'Locked' in data:
             fields.append('locked=?')
             values.append(1 if data['Locked'] else 0)
+            if not data['Locked']:
+                fields.append('login_failure_count=?')
+                values.append(0)
         if fields:
             values.append(account_id)
             db.execute(f'UPDATE accounts SET {", ".join(fields)} WHERE id=?', values)

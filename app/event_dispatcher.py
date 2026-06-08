@@ -1,7 +1,38 @@
 import json
+import queue
 import threading
 import urllib.request
 import urllib.error
+
+_sse_clients = []
+_sse_lock = threading.Lock()
+
+
+def add_sse_client():
+    q = queue.Queue(maxsize=100)
+    with _sse_lock:
+        _sse_clients.append(q)
+    return q
+
+
+def remove_sse_client(q):
+    with _sse_lock:
+        try:
+            _sse_clients.remove(q)
+        except ValueError:
+            pass
+
+
+def _broadcast_to_sse(event_data):
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(event_data)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
 
 
 def dispatch_event(app, event_data):
@@ -14,6 +45,7 @@ def dispatch_event(app, event_data):
 
 
 def _send_to_subscribers(app, event_data):
+    _broadcast_to_sse(event_data)
     with app.app_context():
         from .database import get_db
         db = get_db()

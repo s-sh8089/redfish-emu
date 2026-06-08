@@ -33,7 +33,8 @@ def _create_tables(db):
             enabled INTEGER DEFAULT 1,
             locked INTEGER DEFAULT 0,
             password_change_required INTEGER DEFAULT 0,
-            description TEXT
+            description TEXT,
+            login_failure_count INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS roles (
@@ -402,6 +403,11 @@ def _create_tables(db):
 
 
 def _seed_data(db):
+    import bcrypt as _bcrypt
+
+    def _hash(pw):
+        return _bcrypt.hashpw(pw.encode(), _bcrypt.gensalt()).decode()
+
     now = datetime.now(timezone.utc).isoformat()
 
     # Roles
@@ -422,9 +428,9 @@ def _seed_data(db):
     # Accounts
     if db.execute('SELECT COUNT(*) FROM accounts').fetchone()[0] == 0:
         accounts = [
-            ('admin', 'admin', 'password', 'Administrator', 1, 0, 0, 'Administrator Account'),
-            ('operator1', 'operator1', 'password', 'Operator', 1, 0, 0, 'Operator Account'),
-            ('readonly1', 'readonly1', 'password', 'ReadOnly', 1, 0, 0, 'ReadOnly Account'),
+            ('admin', 'admin', _hash('password'), 'Administrator', 1, 0, 0, 'Administrator Account'),
+            ('operator1', 'operator1', _hash('password'), 'Operator', 1, 0, 0, 'Operator Account'),
+            ('readonly1', 'readonly1', _hash('password'), 'ReadOnly', 1, 0, 0, 'ReadOnly Account'),
         ]
         db.executemany(
             'INSERT INTO accounts (id, username, password, role_id, enabled, locked, password_change_required, description) VALUES (?,?,?,?,?,?,?,?)',
@@ -817,12 +823,25 @@ def _migrate_tables(db):
         'ALTER TABLE systems ADD COLUMN secure_boot_enable INTEGER DEFAULT 0',
         'ALTER TABLE systems ADD COLUMN bios_attributes TEXT',
         'ALTER TABLE managers ADD COLUMN network_protocol TEXT',
+        'ALTER TABLE accounts ADD COLUMN login_failure_count INTEGER DEFAULT 0',
     ]
     for sql in migrations:
         try:
             db.execute(sql)
         except Exception:
             pass
+    db.commit()
+    _migrate_passwords(db)
+
+
+def _migrate_passwords(db):
+    import bcrypt as _bcrypt
+    rows = db.execute('SELECT id, password FROM accounts').fetchall()
+    for row in rows:
+        pw = row['password']
+        if pw and not (pw.startswith('$2b$') or pw.startswith('$2a$')):
+            hashed = _bcrypt.hashpw(pw.encode(), _bcrypt.gensalt()).decode()
+            db.execute('UPDATE accounts SET password=? WHERE id=?', (hashed, row['id']))
     db.commit()
 
 
