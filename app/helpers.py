@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 from flask import jsonify, make_response, request
 
 
@@ -83,3 +84,32 @@ def apply_odata_params(members):
 
 def odata_context(schema_type):
     return f'/redfish/v1/$metadata#{schema_type}'
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def log_entry_to_dict(row, odata_id):
+    args = json.loads(row['message_args']) if row['message_args'] else []
+    d = {
+        '@odata.id': odata_id,
+        '@odata.type': '#LogEntry.v1_15_0.LogEntry',
+        'Id': row['id'],
+        'Name': 'Log Entry',
+        'EntryType': row['entry_type'],
+        'Severity': row['severity'],
+        'Message': row['message'],
+        'MessageId': row['message_id'] or '',
+        'MessageArgs': args,
+        'Created': row['created'],
+        'Modified': row['modified'],
+        'Resolved': bool(row['resolved']),
+    }
+    if row['sensor_type']:
+        d['SensorType'] = row['sensor_type']
+    if row['entry_code']:
+        d['EntryCode'] = row['entry_code']
+    if row['additional_data_uri']:
+        d['AdditionalDataURI'] = row['additional_data_uri']
+    return d

@@ -1,7 +1,8 @@
 import json
+import uuid
 from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response, log_entry_to_dict, now_iso
 
 bp = Blueprint('chassis', __name__)
 
@@ -44,6 +45,7 @@ def chassis(chassis_id):
         'Assembly': {'@odata.id': f'{BASE}/{chassis_id}/Assembly/'},
         'PCIeDevices': {'@odata.id': f'{BASE}/{chassis_id}/PCIeSlots/'},
         'ThermalSubsystem': {'@odata.id': f'{BASE}/{chassis_id}/ThermalSubsystem'},
+        'LogServices': {'@odata.id': f'{BASE}/{chassis_id}/LogServices/'},
         'Links': {
             'ComputerSystems': [{'@odata.id': '/redfish/v1/Systems/system'}],
             'ManagedBy': [{'@odata.id': '/redfish/v1/Managers/bmc/'}]
@@ -471,3 +473,147 @@ def pcie_slot(chassis_id, slot_name):
         'PCIeType': row['pcie_type'],
         'SlotType': row['slot_type']
     })
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/LogServices/')
+def chassis_log_services(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/{chassis_id}/LogServices/',
+        '@odata.type': '#LogServiceCollection.LogServiceCollection',
+        'Name': 'Log Service Collection',
+        'Description': 'List of log services',
+        'Members@odata.count': 1,
+        'Members': [{'@odata.id': f'{BASE}/{chassis_id}/LogServices/Log/'}]
+    })
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/LogServices/Log/')
+def chassis_log_service(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    return json_response({
+        '@odata.id': f'{BASE}/{chassis_id}/LogServices/Log/',
+        '@odata.type': '#LogService.v1_4_0.LogService',
+        'Id': 'Log',
+        'Name': 'Chassis Log',
+        'Description': 'Chassis Log Service',
+        'DateTime': now_iso(),
+        'DateTimeLocalOffset': '+00:00',
+        'MaxNumberOfRecords': 4096,
+        'OverWritePolicy': 'WrapsWhenFull',
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
+        'Entries': {'@odata.id': f'{BASE}/{chassis_id}/LogServices/Log/Entries/'},
+        'Actions': {
+            '#LogService.ClearLog': {
+                'target': f'{BASE}/{chassis_id}/LogServices/Log/Actions/LogService.ClearLog'
+            }
+        }
+    })
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/LogServices/Log/Actions/LogService.ClearLog', methods=['POST'])
+def chassis_log_clear(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    db.execute("DELETE FROM log_entries WHERE log_service_id='Log' AND parent_type='chassis'")
+    db.commit()
+    return no_content_response()
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/LogServices/Log/Entries/', methods=['GET', 'POST'])
+def chassis_log_entries(chassis_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    if request.method == 'POST':
+        return _create_log_entry(db, 'Log', 'chassis',
+                                 f'{BASE}/{chassis_id}/LogServices/Log/Entries/')
+    rows = db.execute(
+        "SELECT * FROM log_entries WHERE log_service_id='Log' AND parent_type='chassis'"
+    ).fetchall()
+    members = [{'@odata.id': f'{BASE}/{chassis_id}/LogServices/Log/Entries/{row["id"]}/'}
+               for row in rows]
+    return json_response({
+        '@odata.id': f'{BASE}/{chassis_id}/LogServices/Log/Entries/',
+        '@odata.type': '#LogEntryCollection.LogEntryCollection',
+        'Name': 'Log Entry Collection',
+        'Description': 'Chassis log entries',
+        'Members@odata.count': len(members),
+        'Members': members
+    })
+
+
+@bp.route('/redfish/v1/Chassis/<chassis_id>/LogServices/Log/Entries/<entry_id>/', methods=['GET', 'PATCH', 'DELETE'])
+def chassis_log_entry(chassis_id, entry_id):
+    db = get_db()
+    if not db.execute('SELECT id FROM chassis WHERE id=?', (chassis_id,)).fetchone():
+        return not_found_response()
+    row = db.execute(
+        "SELECT * FROM log_entries WHERE id=? AND log_service_id='Log' AND parent_type='chassis'",
+        (entry_id,)
+    ).fetchone()
+    if not row:
+        return not_found_response()
+    odata_id = f'{BASE}/{chassis_id}/LogServices/Log/Entries/{entry_id}/'
+    if request.method == 'PATCH':
+        return _patch_log_entry(db, entry_id, odata_id)
+    if request.method == 'DELETE':
+        db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
+        db.commit()
+        return no_content_response()
+    return json_response(log_entry_to_dict(row, odata_id))
+
+
+def _create_log_entry(db, log_service_id, parent_type, collection_path):
+    data = request.get_json() or {}
+    if 'Message' not in data:
+        return bad_request_response('Message is required.')
+    now = now_iso()
+    entry_id = str(uuid.uuid4()).replace('-', '')[:16]
+    db.execute(
+        '''INSERT INTO log_entries
+           (id, log_service_id, parent_type, entry_type, severity, message, message_id, message_args,
+            created, modified, resolved, sensor_type, entry_code, additional_data_uri)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (entry_id, log_service_id, parent_type,
+         data.get('EntryType', 'Event'),
+         data.get('Severity', 'OK'),
+         data['Message'],
+         data.get('MessageId', ''),
+         json.dumps(data.get('MessageArgs', [])),
+         now, now, 0,
+         data.get('SensorType'),
+         data.get('EntryCode'),
+         data.get('AdditionalDataURI'))
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    odata_id = f'{collection_path}{entry_id}/'
+    return created_response(log_entry_to_dict(row, odata_id), location=odata_id)
+
+
+def _patch_log_entry(db, entry_id, odata_id):
+    data = request.get_json() or {}
+    fields, values = [], []
+    if 'Resolved' in data:
+        fields.append('resolved=?')
+        values.append(1 if data['Resolved'] else 0)
+    if 'Message' in data:
+        fields.append('message=?')
+        values.append(data['Message'])
+    if 'Severity' in data:
+        fields.append('severity=?')
+        values.append(data['Severity'])
+    if fields:
+        fields.append('modified=?')
+        values.append(now_iso())
+        values.append(entry_id)
+        db.execute(f'UPDATE log_entries SET {", ".join(fields)} WHERE id=?', values)
+        db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    return json_response(log_entry_to_dict(row, odata_id))

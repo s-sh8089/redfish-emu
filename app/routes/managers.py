@@ -1,9 +1,10 @@
 import json
 import re
+import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response, log_entry_to_dict, now_iso
 
 bp = Blueprint('managers', __name__)
 
@@ -238,9 +239,12 @@ def bmc_redfishlog_clear():
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/')
+@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/', methods=['GET', 'POST'])
 def bmc_log_entries():
     db = get_db()
+    if request.method == 'POST':
+        return _create_log_entry(db, 'RedfishLog', 'manager',
+                                 f'{BASE}/bmc/LogServices/RedfishLog/Entries/')
     rows = db.execute(
         "SELECT * FROM log_entries WHERE log_service_id='RedfishLog' AND parent_type='manager'"
     ).fetchall()
@@ -256,7 +260,7 @@ def bmc_log_entries():
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/<entry_id>/')
+@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/<entry_id>/', methods=['GET', 'PATCH', 'DELETE'])
 def bmc_log_entry(entry_id):
     db = get_db()
     row = db.execute(
@@ -265,15 +269,14 @@ def bmc_log_entry(entry_id):
     ).fetchone()
     if not row:
         return not_found_response()
-    return json_response({
-        '@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/Entries/{entry_id}/',
-        '@odata.type': '#LogEntry.v1_15_0.LogEntry',
-        'Id': row['id'],
-        'Name': 'Log Entry',
-        'EntryType': row['entry_type'],
-        'Message': row['message'],
-        'Created': row['created'],
-    })
+    odata_id = f'{BASE}/bmc/LogServices/RedfishLog/Entries/{entry_id}/'
+    if request.method == 'PATCH':
+        return _patch_log_entry(db, entry_id, odata_id)
+    if request.method == 'DELETE':
+        db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
+        db.commit()
+        return no_content_response()
+    return json_response(log_entry_to_dict(row, odata_id))
 
 
 @bp.route('/redfish/v1/Managers/bmc/ManagerDiagnosticData/')
@@ -600,3 +603,54 @@ def manager_force_failover():
     if not new_manager:
         return bad_request_response('NewManager is required.')
     return no_content_response()
+
+
+def _create_log_entry(db, log_service_id, parent_type, collection_path):
+    data = request.get_json() or {}
+    if 'Message' not in data:
+        return bad_request_response('Message is required.')
+    now = now_iso()
+    entry_id = str(uuid.uuid4()).replace('-', '')[:16]
+    db.execute(
+        '''INSERT INTO log_entries
+           (id, log_service_id, parent_type, entry_type, severity, message, message_id, message_args,
+            created, modified, resolved, sensor_type, entry_code, additional_data_uri)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (entry_id, log_service_id, parent_type,
+         data.get('EntryType', 'Event'),
+         data.get('Severity', 'OK'),
+         data['Message'],
+         data.get('MessageId', ''),
+         json.dumps(data.get('MessageArgs', [])),
+         now, now, 0,
+         data.get('SensorType'),
+         data.get('EntryCode'),
+         data.get('AdditionalDataURI'))
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    odata_id = f'{collection_path}{entry_id}/'
+    return created_response(log_entry_to_dict(row, odata_id), location=odata_id)
+
+
+def _patch_log_entry(db, entry_id, odata_id):
+    data = request.get_json() or {}
+    fields, values = [], []
+    if 'Resolved' in data:
+        fields.append('resolved=?')
+        values.append(1 if data['Resolved'] else 0)
+    if 'Message' in data:
+        fields.append('message=?')
+        values.append(data['Message'])
+    if 'Severity' in data:
+        fields.append('severity=?')
+        values.append(data['Severity'])
+    if fields:
+        fields.append('modified=?')
+        values.append(now_iso())
+        values.append(entry_id)
+        db.execute(f'UPDATE log_entries SET {", ".join(fields)} WHERE id=?', values)
+        db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    return json_response(log_entry_to_dict(row, odata_id))
+
