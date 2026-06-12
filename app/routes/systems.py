@@ -1,7 +1,8 @@
 import json
+import uuid
 from flask import Blueprint, request
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response, log_entry_to_dict, now_iso
 
 bp = Blueprint('systems', __name__)
 
@@ -585,9 +586,11 @@ def system_eventlog():
         'Id': 'EventLog',
         'Name': 'Event Log',
         'Description': 'System Event Log',
-        'DateTime': '2024-01-01T00:00:00Z',
+        'DateTime': now_iso(),
         'DateTimeLocalOffset': '+00:00',
+        'MaxNumberOfRecords': 4096,
         'OverWritePolicy': 'WrapsWhenFull',
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
         'Entries': {'@odata.id': f'{BASE}/system/LogServices/EventLog/Entries/'},
         'Actions': {
             '#LogService.ClearLog': {
@@ -605,9 +608,12 @@ def system_eventlog_clear():
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Entries/')
+@bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Entries/', methods=['GET', 'POST'])
 def system_eventlog_entries():
     db = get_db()
+    if request.method == 'POST':
+        return _create_log_entry(db, 'EventLog', 'system',
+                                 f'{BASE}/system/LogServices/EventLog/Entries/')
     rows = db.execute(
         "SELECT * FROM log_entries WHERE log_service_id='EventLog' AND parent_type='system'"
     ).fetchall()
@@ -623,7 +629,7 @@ def system_eventlog_entries():
     })
 
 
-@bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Entries/<entry_id>/')
+@bp.route('/redfish/v1/Systems/system/LogServices/EventLog/Entries/<entry_id>/', methods=['GET', 'PATCH', 'DELETE'])
 def system_eventlog_entry(entry_id):
     db = get_db()
     row = db.execute(
@@ -632,7 +638,14 @@ def system_eventlog_entry(entry_id):
     ).fetchone()
     if not row:
         return not_found_response()
-    return json_response(_log_entry_to_dict(row, f'{BASE}/system/LogServices/EventLog/Entries/{entry_id}/'))
+    odata_id = f'{BASE}/system/LogServices/EventLog/Entries/{entry_id}/'
+    if request.method == 'PATCH':
+        return _patch_log_entry(db, entry_id, odata_id)
+    if request.method == 'DELETE':
+        db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
+        db.commit()
+        return no_content_response()
+    return json_response(log_entry_to_dict(row, odata_id))
 
 
 @bp.route('/redfish/v1/Systems/system/LogServices/SEL/')
@@ -643,7 +656,11 @@ def system_sel():
         'Id': 'SEL',
         'Name': 'SEL',
         'Description': 'IPMI System Event Log',
+        'DateTime': now_iso(),
+        'DateTimeLocalOffset': '+00:00',
+        'MaxNumberOfRecords': 4096,
         'OverWritePolicy': 'WrapsWhenFull',
+        'Status': {'State': 'Enabled', 'Health': 'OK'},
         'Entries': {'@odata.id': f'{BASE}/system/LogServices/SEL/Entries/'},
         'Actions': {
             '#LogService.ClearLog': {
@@ -661,9 +678,12 @@ def system_sel_clear():
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Systems/system/LogServices/SEL/Entries/')
+@bp.route('/redfish/v1/Systems/system/LogServices/SEL/Entries/', methods=['GET', 'POST'])
 def system_sel_entries():
     db = get_db()
+    if request.method == 'POST':
+        return _create_log_entry(db, 'SEL', 'system',
+                                 f'{BASE}/system/LogServices/SEL/Entries/')
     rows = db.execute(
         "SELECT * FROM log_entries WHERE log_service_id='SEL' AND parent_type='system'"
     ).fetchall()
@@ -679,7 +699,7 @@ def system_sel_entries():
     })
 
 
-@bp.route('/redfish/v1/Systems/system/LogServices/SEL/Entries/<entry_id>/')
+@bp.route('/redfish/v1/Systems/system/LogServices/SEL/Entries/<entry_id>/', methods=['GET', 'PATCH', 'DELETE'])
 def system_sel_entry(entry_id):
     db = get_db()
     row = db.execute(
@@ -688,29 +708,61 @@ def system_sel_entry(entry_id):
     ).fetchone()
     if not row:
         return not_found_response()
-    return json_response(_log_entry_to_dict(row, f'{BASE}/system/LogServices/SEL/Entries/{entry_id}/'))
+    odata_id = f'{BASE}/system/LogServices/SEL/Entries/{entry_id}/'
+    if request.method == 'PATCH':
+        return _patch_log_entry(db, entry_id, odata_id)
+    if request.method == 'DELETE':
+        db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
+        db.commit()
+        return no_content_response()
+    return json_response(log_entry_to_dict(row, odata_id))
 
 
-def _log_entry_to_dict(row, odata_id):
-    args = json.loads(row['message_args']) if row['message_args'] else []
-    d = {
-        '@odata.id': odata_id,
-        '@odata.type': '#LogEntry.v1_15_0.LogEntry',
-        'Id': row['id'],
-        'Name': 'Log Entry',
-        'EntryType': row['entry_type'],
-        'Severity': row['severity'],
-        'Message': row['message'],
-        'MessageId': row['message_id'] or '',
-        'MessageArgs': args,
-        'Created': row['created'],
-        'Modified': row['modified'],
-        'Resolved': bool(row['resolved']),
-    }
-    if row['sensor_type']:
-        d['SensorType'] = row['sensor_type']
-    if row['entry_code']:
-        d['EntryCode'] = row['entry_code']
-    if row['additional_data_uri']:
-        d['AdditionalDataURI'] = row['additional_data_uri']
-    return d
+def _create_log_entry(db, log_service_id, parent_type, collection_path):
+    data = request.get_json() or {}
+    if 'Message' not in data:
+        return bad_request_response('Message is required.')
+    now = now_iso()
+    entry_id = str(uuid.uuid4()).replace('-', '')[:16]
+    db.execute(
+        '''INSERT INTO log_entries
+           (id, log_service_id, parent_type, entry_type, severity, message, message_id, message_args,
+            created, modified, resolved, sensor_type, entry_code, additional_data_uri)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (entry_id, log_service_id, parent_type,
+         data.get('EntryType', 'Event'),
+         data.get('Severity', 'OK'),
+         data['Message'],
+         data.get('MessageId', ''),
+         json.dumps(data.get('MessageArgs', [])),
+         now, now, 0,
+         data.get('SensorType'),
+         data.get('EntryCode'),
+         data.get('AdditionalDataURI'))
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    odata_id = f'{collection_path}{entry_id}/'
+    return created_response(log_entry_to_dict(row, odata_id), location=odata_id)
+
+
+def _patch_log_entry(db, entry_id, odata_id):
+    data = request.get_json() or {}
+    fields, values = [], []
+    if 'Resolved' in data:
+        fields.append('resolved=?')
+        values.append(1 if data['Resolved'] else 0)
+    if 'Message' in data:
+        fields.append('message=?')
+        values.append(data['Message'])
+    if 'Severity' in data:
+        fields.append('severity=?')
+        values.append(data['Severity'])
+    if fields:
+        fields.append('modified=?')
+        values.append(now_iso())
+        values.append(entry_id)
+        db.execute(f'UPDATE log_entries SET {", ".join(fields)} WHERE id=?', values)
+        db.commit()
+    row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
+    return json_response(log_entry_to_dict(row, odata_id))

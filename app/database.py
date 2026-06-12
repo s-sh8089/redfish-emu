@@ -212,7 +212,10 @@ def _create_tables(db):
             context TEXT,
             protocol TEXT DEFAULT 'Redfish',
             event_types TEXT,
-            origin_resources TEXT
+            origin_resources TEXT,
+            registry_prefixes TEXT,
+            message_ids TEXT,
+            resource_types TEXT
         );
 
         CREATE TABLE IF NOT EXISTS firmware_inventory (
@@ -384,22 +387,47 @@ def _create_tables(db):
         CREATE TABLE IF NOT EXISTS metric_report_definitions (
             id TEXT PRIMARY KEY,
             name TEXT,
-            report_type TEXT DEFAULT 'Periodic'
+            description TEXT,
+            report_type TEXT DEFAULT 'Periodic',
+            report_actions TEXT,
+            metrics TEXT,
+            schedule TEXT,
+            status_state TEXT DEFAULT 'Enabled',
+            status_health TEXT DEFAULT 'OK'
         );
 
         CREATE TABLE IF NOT EXISTS metric_reports (
             id TEXT PRIMARY KEY,
             name TEXT,
-            timestamp TEXT
+            description TEXT,
+            timestamp TEXT,
+            definition_id TEXT,
+            metric_values TEXT
         );
 
         CREATE TABLE IF NOT EXISTS triggers (
             id TEXT PRIMARY KEY,
             name TEXT,
-            metric_type TEXT
+            description TEXT,
+            metric_type TEXT,
+            trigger_actions TEXT,
+            metric_properties TEXT,
+            numeric_thresholds TEXT,
+            discrete_values TEXT,
+            status_state TEXT DEFAULT 'Enabled',
+            status_health TEXT DEFAULT 'OK'
         );
     ''')
     db.commit()
+
+
+def _insert_log_entries_if_missing(db, entries):
+    sql = '''INSERT OR IGNORE INTO log_entries
+             (id, log_service_id, parent_type, entry_type, severity,
+              message, message_id, message_args, created, modified, resolved,
+              sensor_type, entry_code, additional_data_uri)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
+    db.executemany(sql, entries)
 
 
 def _seed_data(db):
@@ -742,28 +770,27 @@ VQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7
         )
 
     # Log Entries
-    if db.execute('SELECT COUNT(*) FROM log_entries').fetchone()[0] == 0:
-        log_ts = '2024-01-01T00:00:00+00:00'
-        entries = [
-            ('eventlog1', 'EventLog', 'system', 'Event', 'OK',
-             'System started successfully', 'Base.1.0.Success', json.dumps([]),
-             log_ts, log_ts, 1, None, None, None),
-            ('eventlog2', 'EventLog', 'system', 'Event', 'Warning',
-             'Temperature threshold exceeded', 'ThermalEvents.1.0.TemperatureAboveUpperCautionThreshold',
-             json.dumps(['CPU1 Temp', '87']), log_ts, log_ts, 0, None, None, None),
-            ('sel1', 'SEL', 'system', 'SEL', 'OK',
-             'System Event', 'IPMI.1.0.SELEntry', json.dumps([]),
-             log_ts, log_ts, 1, 'Temperature', 'Lower Non-critical going low', None),
-            ('redfishlog1', 'RedfishLog', 'manager', 'Event', 'OK',
-             'BMC startup complete', 'Base.1.0.Success', json.dumps([]),
-             log_ts, log_ts, 1, None, None, None),
-        ]
-        db.executemany('''
-            INSERT INTO log_entries (id, log_service_id, parent_type, entry_type, severity,
-                message, message_id, message_args, created, modified, resolved,
-                sensor_type, entry_code, additional_data_uri)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ''', entries)
+    log_ts = '2024-01-01T00:00:00+00:00'
+    _insert_log_entries_if_missing(db, [
+        ('eventlog1', 'EventLog', 'system', 'Event', 'OK',
+         'System started successfully', 'Base.1.0.Success', json.dumps([]),
+         log_ts, log_ts, 1, None, None, None),
+        ('eventlog2', 'EventLog', 'system', 'Event', 'Warning',
+         'Temperature threshold exceeded', 'ThermalEvents.1.0.TemperatureAboveUpperCautionThreshold',
+         json.dumps(['CPU1 Temp', '87']), log_ts, log_ts, 0, None, None, None),
+        ('sel1', 'SEL', 'system', 'SEL', 'OK',
+         'System Event', 'IPMI.1.0.SELEntry', json.dumps([]),
+         log_ts, log_ts, 1, 'Temperature', 'Lower Non-critical going low', None),
+        ('redfishlog1', 'RedfishLog', 'manager', 'Event', 'OK',
+         'BMC startup complete', 'Base.1.0.Success', json.dumps([]),
+         log_ts, log_ts, 1, None, None, None),
+        ('chassislog1', 'Log', 'chassis', 'Event', 'OK',
+         'Chassis powered on', 'Base.1.0.Success', json.dumps([]),
+         log_ts, log_ts, 1, None, None, None),
+        ('chassislog2', 'Log', 'chassis', 'Event', 'Warning',
+         'Fan speed below threshold', 'CoolingEvents.1.0.FanBelowMinThreshold',
+         json.dumps(['Fan1', '800']), log_ts, log_ts, 0, None, None, None),
+    ])
 
     # Tasks
     if db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0:
@@ -776,22 +803,63 @@ VQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7
     # Metric Report Definitions
     if db.execute('SELECT COUNT(*) FROM metric_report_definitions').fetchone()[0] == 0:
         db.execute(
-            'INSERT INTO metric_report_definitions (id, name, report_type) VALUES (?,?,?)',
-            ('PowerMetrics', 'Power Metrics Report Definition', 'Periodic')
+            '''INSERT INTO metric_report_definitions
+               (id, name, description, report_type, report_actions, metrics, schedule, status_state, status_health)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                'PowerMetrics',
+                'Power Metrics Report Definition',
+                'Periodic power consumption metrics',
+                'Periodic',
+                json.dumps(['LogToMetricReportsCollection']),
+                json.dumps([{'MetricId': 'PowerConsumedWatts',
+                             'MetricProperties': ['/redfish/v1/Chassis/chassis1/Power#/PowerControl/0/PowerConsumedWatts']}]),
+                json.dumps({'RecurrenceInterval': 'PT5S'}),
+                'Enabled',
+                'OK',
+            )
         )
 
     # Metric Reports
     if db.execute('SELECT COUNT(*) FROM metric_reports').fetchone()[0] == 0:
         db.execute(
-            'INSERT INTO metric_reports (id, name, timestamp) VALUES (?,?,?)',
-            ('PowerMetrics', 'Power Metrics Report', '2024-01-01T00:00:00Z')
+            '''INSERT INTO metric_reports (id, name, description, timestamp, definition_id, metric_values)
+               VALUES (?,?,?,?,?,?)''',
+            (
+                'PowerMetrics',
+                'Power Metrics Report',
+                'Latest power metrics snapshot',
+                '2024-01-01T00:00:00Z',
+                'PowerMetrics',
+                json.dumps([{
+                    'MetricId': 'PowerConsumedWatts',
+                    'MetricValue': '250',
+                    'Timestamp': '2024-01-01T00:00:00Z',
+                    'MetricProperty': '/redfish/v1/Chassis/chassis1/Power#/PowerControl/0/PowerConsumedWatts',
+                }]),
+            )
         )
 
     # Triggers
     if db.execute('SELECT COUNT(*) FROM triggers').fetchone()[0] == 0:
         db.execute(
-            'INSERT INTO triggers (id, name, metric_type) VALUES (?,?,?)',
-            ('TempTrigger', 'Temperature Trigger', 'Numeric')
+            '''INSERT INTO triggers
+               (id, name, description, metric_type, trigger_actions, metric_properties, numeric_thresholds, status_state, status_health)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                'TempTrigger',
+                'Temperature Trigger',
+                'Triggers on high CPU temperature',
+                'Numeric',
+                json.dumps(['RedfishEvent']),
+                json.dumps(['/redfish/v1/Chassis/chassis1/Thermal#/Temperatures/0/ReadingCelsius']),
+                json.dumps({
+                    'UpperCritical': {'Reading': 75.0, 'Activation': 'Increasing'},
+                    'UpperWarning':  {'Reading': 70.0, 'Activation': 'Increasing'},
+                }),
+                'Enabled',
+                'OK',
+            )
         )
 
     # Virtual Media
@@ -824,6 +892,25 @@ def _migrate_tables(db):
         'ALTER TABLE systems ADD COLUMN bios_attributes TEXT',
         'ALTER TABLE managers ADD COLUMN network_protocol TEXT',
         'ALTER TABLE accounts ADD COLUMN login_failure_count INTEGER DEFAULT 0',
+        'ALTER TABLE event_subscriptions ADD COLUMN registry_prefixes TEXT',
+        'ALTER TABLE event_subscriptions ADD COLUMN message_ids TEXT',
+        'ALTER TABLE event_subscriptions ADD COLUMN resource_types TEXT',
+        'ALTER TABLE metric_report_definitions ADD COLUMN description TEXT',
+        'ALTER TABLE metric_report_definitions ADD COLUMN report_actions TEXT',
+        'ALTER TABLE metric_report_definitions ADD COLUMN metrics TEXT',
+        'ALTER TABLE metric_report_definitions ADD COLUMN schedule TEXT',
+        'ALTER TABLE metric_report_definitions ADD COLUMN status_state TEXT DEFAULT \'Enabled\'',
+        'ALTER TABLE metric_report_definitions ADD COLUMN status_health TEXT DEFAULT \'OK\'',
+        'ALTER TABLE metric_reports ADD COLUMN description TEXT',
+        'ALTER TABLE metric_reports ADD COLUMN definition_id TEXT',
+        'ALTER TABLE metric_reports ADD COLUMN metric_values TEXT',
+        'ALTER TABLE triggers ADD COLUMN description TEXT',
+        'ALTER TABLE triggers ADD COLUMN trigger_actions TEXT',
+        'ALTER TABLE triggers ADD COLUMN metric_properties TEXT',
+        'ALTER TABLE triggers ADD COLUMN numeric_thresholds TEXT',
+        'ALTER TABLE triggers ADD COLUMN discrete_values TEXT',
+        'ALTER TABLE triggers ADD COLUMN status_state TEXT DEFAULT \'Enabled\'',
+        'ALTER TABLE triggers ADD COLUMN status_health TEXT DEFAULT \'OK\'',
     ]
     for sql in migrations:
         try:

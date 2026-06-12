@@ -65,11 +65,16 @@ def subscriptions():
         return bad_request_response('Destination is required.')
     sub_id = str(uuid.uuid4()).replace('-', '')[:12]
     db.execute(
-        'INSERT INTO event_subscriptions (id, destination, context, protocol, event_types, origin_resources) VALUES (?,?,?,?,?,?)',
+        '''INSERT INTO event_subscriptions
+           (id, destination, context, protocol, event_types, origin_resources, registry_prefixes, message_ids, resource_types)
+           VALUES (?,?,?,?,?,?,?,?,?)''',
         (sub_id, data['Destination'], data.get('Context', ''),
          data.get('Protocol', 'Redfish'),
          json.dumps(data.get('EventTypes', [])),
-         json.dumps(data.get('OriginResources', [])))
+         json.dumps(data.get('OriginResources', [])),
+         json.dumps(data.get('RegistryPrefixes', [])),
+         json.dumps(data.get('MessageIds', [])),
+         json.dumps(data.get('ResourceTypes', [])))
     )
     db.commit()
     row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
@@ -102,6 +107,15 @@ def subscription(sub_id):
         if 'OriginResources' in data:
             fields.append('origin_resources=?')
             values.append(json.dumps(data['OriginResources']))
+        if 'RegistryPrefixes' in data:
+            fields.append('registry_prefixes=?')
+            values.append(json.dumps(data['RegistryPrefixes']))
+        if 'MessageIds' in data:
+            fields.append('message_ids=?')
+            values.append(json.dumps(data['MessageIds']))
+        if 'ResourceTypes' in data:
+            fields.append('resource_types=?')
+            values.append(json.dumps(data['ResourceTypes']))
         if fields:
             values.append(sub_id)
             db.execute(f'UPDATE event_subscriptions SET {", ".join(fields)} WHERE id=?', values)
@@ -173,6 +187,9 @@ def sse_stream():
 def _subscription_to_dict(row):
     event_types = json.loads(row['event_types']) if row['event_types'] else []
     origin_resources = json.loads(row['origin_resources']) if row['origin_resources'] else []
+    registry_prefixes = json.loads(row['registry_prefixes']) if row['registry_prefixes'] else []
+    message_ids = json.loads(row['message_ids']) if row['message_ids'] else []
+    resource_types = json.loads(row['resource_types']) if row['resource_types'] else []
     return {
         '@odata.id': f'/redfish/v1/EventService/Subscriptions/{row["id"]}/',
         '@odata.type': '#EventDestination.v1_13_0.EventDestination',
@@ -182,5 +199,8 @@ def _subscription_to_dict(row):
         'Context': row['context'] or '',
         'Protocol': row['protocol'],
         'EventTypes': event_types,
-        'OriginResources': origin_resources
+        'OriginResources': origin_resources,
+        'RegistryPrefixes': registry_prefixes,
+        'MessageIds': message_ids,
+        'ResourceTypes': resource_types,
     }
