@@ -9,3 +9,10 @@ services:
       - FLASK_APP=app
       - FLASK_ENV=development
       - DB_PATH=/data/redfish.db
+
+    networks:
+      - redfish-net
+
+networks:
+  redfish-net:
+    external: true
