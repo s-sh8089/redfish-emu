@@ -24,6 +24,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 def create_app():
     app = Flask(__name__)
+    app.url_map.strict_slashes = False
     app.config.from_object(Config)
 
     cors_origins = os.environ.get('CORS_ORIGINS', '*')
