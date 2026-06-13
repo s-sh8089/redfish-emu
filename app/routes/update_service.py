@@ -1,13 +1,15 @@
 import json
-from flask import Blueprint, request
+import sqlite3
+from fastapi import APIRouter, Depends, Body, UploadFile, File
 from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response, bad_request_response, created_response
 from .task_service import create_task, complete_task
 
-bp = Blueprint('update_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/UpdateService/')
+@router.get('/redfish/v1/UpdateService/')
 def update_service():
     return json_response({
         '@odata.id': '/redfish/v1/UpdateService/',
@@ -35,13 +37,12 @@ def update_service():
     })
 
 
-@bp.route('/redfish/v1/UpdateService/update', methods=['POST'])
-def http_push_update():
-    db = get_db()
-    if 'file' not in request.files:
-        return bad_request_response('No firmware file provided (multipart field "file" required).')
-    fw_file = request.files['file']
-    filename = fw_file.filename or 'unknown'
+@router.post('/redfish/v1/UpdateService/update')
+async def http_push_update(
+    file: UploadFile = File(...),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    filename = file.filename or 'unknown'
     task_id = create_task(db, messages=[{'Message': f'Firmware upload started: {filename}', 'Severity': 'OK'}])
     complete_task(db, task_id, messages=[{'Message': f'Firmware uploaded: {filename}', 'Severity': 'OK'}])
     task_data = {
@@ -54,14 +55,16 @@ def http_push_update():
     return created_response(task_data, location=f'/redfish/v1/TaskService/Tasks/{task_id}/')
 
 
-@bp.route('/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate', methods=['POST'])
-def simple_update():
-    data = request.get_json() or {}
+@router.post('/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate')
+def simple_update(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     image_uri = data.get('ImageURI')
     if not image_uri:
         return bad_request_response('ImageURI is required')
     targets = data.get('Targets', [])
-    db = get_db()
     new_version = image_uri.rstrip('/').split('/')[-1]
     if targets:
         for target in targets:
@@ -74,9 +77,8 @@ def simple_update():
     return json_response({'@odata.id': f'/redfish/v1/TaskService/Tasks/{task_id}/'}, 202)
 
 
-@bp.route('/redfish/v1/UpdateService/FirmwareInventory/')
-def firmware_inventory():
-    db = get_db()
+@router.get('/redfish/v1/UpdateService/FirmwareInventory/')
+def firmware_inventory(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM firmware_inventory').fetchall()
     members = [{'@odata.id': f'/redfish/v1/UpdateService/FirmwareInventory/{row["id"]}/'}
                for row in rows]
@@ -89,9 +91,8 @@ def firmware_inventory():
     })
 
 
-@bp.route('/redfish/v1/UpdateService/FirmwareInventory/<fw_id>/')
-def firmware_item(fw_id):
-    db = get_db()
+@router.get('/redfish/v1/UpdateService/FirmwareInventory/{fw_id}/')
+def firmware_item(fw_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM firmware_inventory WHERE id=?', (fw_id,)).fetchone()
     if not row:
         return not_found_response()
@@ -110,9 +111,8 @@ def firmware_item(fw_id):
     })
 
 
-@bp.route('/redfish/v1/UpdateService/SoftwareInventory/')
-def software_inventory():
-    db = get_db()
+@router.get('/redfish/v1/UpdateService/SoftwareInventory/')
+def software_inventory(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM firmware_inventory').fetchall()
     members = [{'@odata.id': f'/redfish/v1/UpdateService/SoftwareInventory/{row["id"]}/'}
                for row in rows]
@@ -125,9 +125,8 @@ def software_inventory():
     })
 
 
-@bp.route('/redfish/v1/UpdateService/SoftwareInventory/<fw_id>/')
-def software_item(fw_id):
-    db = get_db()
+@router.get('/redfish/v1/UpdateService/SoftwareInventory/{fw_id}/')
+def software_item(fw_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM firmware_inventory WHERE id=?', (fw_id,)).fetchone()
     if not row:
         return not_found_response()

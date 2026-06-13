@@ -6,8 +6,6 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - FLASK_APP=app
-      - FLASK_ENV=development
       - DB_PATH=/data/redfish.db
 
     networks:

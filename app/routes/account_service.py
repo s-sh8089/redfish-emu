@@ -1,14 +1,15 @@
 import json
+import sqlite3
 import uuid
-from flask import Blueprint, request
+from fastapi import APIRouter, Depends, Body
 from ..database import get_db
+from ..auth import verify_auth, hash_password
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
-from ..auth import hash_password
 
-bp = Blueprint('account_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/AccountService/')
+@router.get('/redfish/v1/AccountService/')
 def account_service():
     return json_response({
         '@odata.id': '/redfish/v1/AccountService/',
@@ -41,23 +42,27 @@ def account_service():
     })
 
 
-@bp.route('/redfish/v1/AccountService/Accounts/', methods=['GET', 'POST'])
-def accounts():
-    db = get_db()
-    if request.method == 'GET':
-        rows = db.execute('SELECT id FROM accounts').fetchall()
-        members = [{'@odata.id': f'/redfish/v1/AccountService/Accounts/{row["id"]}/'}
-                   for row in rows]
-        return json_response({
-            '@odata.id': '/redfish/v1/AccountService/Accounts/',
-            '@odata.type': '#ManagerAccountCollection.ManagerAccountCollection',
-            'Name': 'Accounts Collection',
-            'Description': 'List of user accounts',
-            'Members@odata.count': len(members),
-            'Members': members
-        })
+@router.get('/redfish/v1/AccountService/Accounts/')
+def accounts(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute('SELECT id FROM accounts').fetchall()
+    members = [{'@odata.id': f'/redfish/v1/AccountService/Accounts/{row["id"]}/'}
+               for row in rows]
+    return json_response({
+        '@odata.id': '/redfish/v1/AccountService/Accounts/',
+        '@odata.type': '#ManagerAccountCollection.ManagerAccountCollection',
+        'Name': 'Accounts Collection',
+        'Description': 'List of user accounts',
+        'Members@odata.count': len(members),
+        'Members': members
+    })
 
-    data = request.get_json()
+
+@router.post('/redfish/v1/AccountService/Accounts/')
+def accounts_post(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     if not data or 'UserName' not in data or 'Password' not in data or 'RoleId' not in data:
         return bad_request_response('UserName, Password, RoleId are required.')
     plain_pw = data['Password']
@@ -81,54 +86,63 @@ def accounts():
     )
 
 
-@bp.route('/redfish/v1/AccountService/Accounts/<account_id>/', methods=['GET', 'PATCH', 'DELETE'])
-def account(account_id):
-    db = get_db()
+@router.get('/redfish/v1/AccountService/Accounts/{account_id}/')
+def account_get(account_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
     if not row:
         return not_found_response()
+    return json_response(_account_to_dict(row))
 
-    if request.method == 'GET':
-        return json_response(_account_to_dict(row))
 
-    elif request.method == 'PATCH':
-        data = request.get_json() or {}
-        fields = []
-        values = []
-        if 'Password' in data:
-            plain_pw = data['Password']
-            if len(plain_pw) < 8:
-                return bad_request_response('Password must be at least 8 characters.')
-            if len(plain_pw) > 20:
-                return bad_request_response('Password must be at most 20 characters.')
-            fields.append('password=?')
-            values.append(hash_password(plain_pw))
-        if 'RoleId' in data:
-            fields.append('role_id=?')
-            values.append(data['RoleId'])
-        if 'Enabled' in data:
-            fields.append('enabled=?')
-            values.append(1 if data['Enabled'] else 0)
-        if 'Locked' in data:
-            fields.append('locked=?')
-            values.append(1 if data['Locked'] else 0)
-            if not data['Locked']:
-                fields.append('login_failure_count=?')
-                values.append(0)
-        if fields:
-            values.append(account_id)
-            db.execute(f'UPDATE accounts SET {", ".join(fields)} WHERE id=?', values)
-            db.commit()
-        row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
-        return json_response(_account_to_dict(row))
-
-    else:
-        db.execute('DELETE FROM accounts WHERE id=?', (account_id,))
+@router.patch('/redfish/v1/AccountService/Accounts/{account_id}/')
+def account_patch(
+    account_id: str,
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
+    if not row:
+        return not_found_response()
+    data = body or {}
+    fields, values = [], []
+    if 'Password' in data:
+        plain_pw = data['Password']
+        if len(plain_pw) < 8:
+            return bad_request_response('Password must be at least 8 characters.')
+        if len(plain_pw) > 20:
+            return bad_request_response('Password must be at most 20 characters.')
+        fields.append('password=?')
+        values.append(hash_password(plain_pw))
+    if 'RoleId' in data:
+        fields.append('role_id=?')
+        values.append(data['RoleId'])
+    if 'Enabled' in data:
+        fields.append('enabled=?')
+        values.append(1 if data['Enabled'] else 0)
+    if 'Locked' in data:
+        fields.append('locked=?')
+        values.append(1 if data['Locked'] else 0)
+        if not data['Locked']:
+            fields.append('login_failure_count=?')
+            values.append(0)
+    if fields:
+        values.append(account_id)
+        db.execute(f'UPDATE accounts SET {", ".join(fields)} WHERE id=?', values)
         db.commit()
-        return no_content_response()
+    row = db.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
+    return json_response(_account_to_dict(row))
 
 
-def _account_to_dict(row):
+@router.delete('/redfish/v1/AccountService/Accounts/{account_id}/')
+def account_delete(account_id: str, db: sqlite3.Connection = Depends(get_db)):
+    if not db.execute('SELECT id FROM accounts WHERE id=?', (account_id,)).fetchone():
+        return not_found_response()
+    db.execute('DELETE FROM accounts WHERE id=?', (account_id,))
+    db.commit()
+    return no_content_response()
+
+
+def _account_to_dict(row) -> dict:
     return {
         '@odata.id': f'/redfish/v1/AccountService/Accounts/{row["id"]}/',
         '@odata.type': '#ManagerAccount.v1_10_0.ManagerAccount',
@@ -148,9 +162,8 @@ def _account_to_dict(row):
     }
 
 
-@bp.route('/redfish/v1/AccountService/Roles/')
-def roles():
-    db = get_db()
+@router.get('/redfish/v1/AccountService/Roles/')
+def roles(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM roles').fetchall()
     members = [{'@odata.id': f'/redfish/v1/AccountService/Roles/{row["id"]}/'}
                for row in rows]
@@ -164,9 +177,8 @@ def roles():
     })
 
 
-@bp.route('/redfish/v1/AccountService/Roles/<role_id>/')
-def role(role_id):
-    db = get_db()
+@router.get('/redfish/v1/AccountService/Roles/{role_id}/')
+def role(role_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
     if not row:
         return not_found_response()
@@ -184,7 +196,7 @@ def role(role_id):
     })
 
 
-@bp.route('/redfish/v1/AccountService/LDAP/Certificates/')
+@router.get('/redfish/v1/AccountService/LDAP/Certificates/')
 def ldap_certificates():
     return json_response({
         '@odata.id': '/redfish/v1/AccountService/LDAP/Certificates/',

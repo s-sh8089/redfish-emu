@@ -1,14 +1,16 @@
+import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
-from flask import Blueprint, request
+from fastapi import APIRouter, Depends, Body, Request
+from fastapi.responses import JSONResponse
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
-from ..auth import _check_password, _increment_failure, SESSION_TIMEOUT_MINUTES
+from ..auth import verify_auth, _check_password, _increment_failure, SESSION_TIMEOUT_MINUTES
+from ..helpers import json_response, not_found_response, bad_request_response, no_content_response
 
-bp = Blueprint('session_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/SessionService/')
+@router.get('/redfish/v1/SessionService/')
 def session_service():
     return json_response({
         '@odata.id': '/redfish/v1/SessionService/',
@@ -22,24 +24,29 @@ def session_service():
     })
 
 
-@bp.route('/redfish/v1/SessionService/Sessions/', methods=['GET', 'POST'])
-def sessions():
-    db = get_db()
-    if request.method == 'GET':
-        _purge_expired_sessions(db)
-        rows = db.execute('SELECT id FROM sessions').fetchall()
-        members = [{'@odata.id': f'/redfish/v1/SessionService/Sessions/{row["id"]}/'}
-                   for row in rows]
-        return json_response({
-            '@odata.id': '/redfish/v1/SessionService/Sessions/',
-            '@odata.type': '#SessionCollection.SessionCollection',
-            'Name': 'Session Collection',
-            'Description': 'List of active sessions',
-            'Members@odata.count': len(members),
-            'Members': members
-        })
+@router.get('/redfish/v1/SessionService/Sessions/')
+def sessions_get(db: sqlite3.Connection = Depends(get_db)):
+    _purge_expired_sessions(db)
+    rows = db.execute('SELECT id FROM sessions').fetchall()
+    members = [{'@odata.id': f'/redfish/v1/SessionService/Sessions/{row["id"]}/'}
+               for row in rows]
+    return json_response({
+        '@odata.id': '/redfish/v1/SessionService/Sessions/',
+        '@odata.type': '#SessionCollection.SessionCollection',
+        'Name': 'Session Collection',
+        'Description': 'List of active sessions',
+        'Members@odata.count': len(members),
+        'Members': members
+    })
 
-    data = request.get_json()
+
+@router.post('/redfish/v1/SessionService/Sessions/')
+def sessions_post(
+    request: Request,
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     if not data or 'UserName' not in data or 'Password' not in data:
         return bad_request_response('UserName and Password are required.')
 
@@ -60,7 +67,7 @@ def sessions():
     session_id = str(uuid.uuid4()).replace('-', '')[:16]
     token = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    client_ip = request.remote_addr or '127.0.0.1'
+    client_ip = request.client.host if request.client else '127.0.0.1'
 
     db.execute(
         'INSERT INTO sessions (id, username, token, client_origin_ip, created_at) VALUES (?,?,?,?,?)',
@@ -78,19 +85,22 @@ def sessions():
         'Description': 'User Session',
         'Oem': {}
     }
-    resp = created_response(session_data, location=f'/redfish/v1/SessionService/Sessions/{session_id}/')
-    resp.headers['X-Auth-Token'] = token
-    return resp
+    return JSONResponse(
+        content=session_data,
+        status_code=201,
+        headers={
+            'OData-Version': '4.0',
+            'Location': f'/redfish/v1/SessionService/Sessions/{session_id}/',
+            'X-Auth-Token': token,
+        }
+    )
 
 
-@bp.route('/redfish/v1/SessionService/Sessions/<session_id>/', methods=['GET', 'DELETE'])
-def session(session_id):
-    db = get_db()
+@router.get('/redfish/v1/SessionService/Sessions/{session_id}/')
+def session_get(session_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
     if not row:
         return not_found_response()
-
-    # Check timeout
     created = datetime.fromisoformat(row['created_at'])
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
@@ -98,25 +108,28 @@ def session(session_id):
         db.execute('DELETE FROM sessions WHERE id=?', (session_id,))
         db.commit()
         return not_found_response()
-
-    if request.method == 'GET':
-        return json_response({
-            '@odata.id': f'/redfish/v1/SessionService/Sessions/{session_id}/',
-            '@odata.type': '#Session.v1_6_0.Session',
-            'Id': session_id,
-            'Name': 'User Session',
-            'UserName': row['username'],
-            'ClientOriginIPAddress': row['client_origin_ip'] or '',
-            'Description': 'User Session',
-            'Oem': {}
-        })
-    else:
-        db.execute('DELETE FROM sessions WHERE id=?', (session_id,))
-        db.commit()
-        return no_content_response()
+    return json_response({
+        '@odata.id': f'/redfish/v1/SessionService/Sessions/{session_id}/',
+        '@odata.type': '#Session.v1_6_0.Session',
+        'Id': session_id,
+        'Name': 'User Session',
+        'UserName': row['username'],
+        'ClientOriginIPAddress': row['client_origin_ip'] or '',
+        'Description': 'User Session',
+        'Oem': {}
+    })
 
 
-def _purge_expired_sessions(db):
+@router.delete('/redfish/v1/SessionService/Sessions/{session_id}/')
+def session_delete(session_id: str, db: sqlite3.Connection = Depends(get_db)):
+    if not db.execute('SELECT id FROM sessions WHERE id=?', (session_id,)).fetchone():
+        return not_found_response()
+    db.execute('DELETE FROM sessions WHERE id=?', (session_id,))
+    db.commit()
+    return no_content_response()
+
+
+def _purge_expired_sessions(db: sqlite3.Connection):
     rows = db.execute('SELECT id, created_at FROM sessions').fetchall()
     expired = []
     for row in rows:

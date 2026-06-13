@@ -1,62 +1,62 @@
+import asyncio
 import json
-import queue
-import threading
+import os
+import sqlite3
 import urllib.request
-import urllib.error
 
-_sse_clients = []
-_sse_lock = threading.Lock()
+_DB_PATH = os.environ.get('DB_PATH', 'data/redfish.db')
+
+_sse_clients: list[asyncio.Queue] = []
+_sse_lock = asyncio.Lock()
 
 
-def add_sse_client():
-    q = queue.Queue(maxsize=100)
-    with _sse_lock:
+async def add_sse_client() -> asyncio.Queue:
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    async with _sse_lock:
         _sse_clients.append(q)
     return q
 
 
-def remove_sse_client(q):
-    with _sse_lock:
+async def remove_sse_client(q: asyncio.Queue) -> None:
+    async with _sse_lock:
         try:
             _sse_clients.remove(q)
         except ValueError:
             pass
 
 
-def _broadcast_to_sse(event_data):
-    with _sse_lock:
-        dead = []
-        for q in _sse_clients:
+async def _broadcast_to_sse(event_data: dict) -> None:
+    async with _sse_lock:
+        for q in list(_sse_clients):
             try:
                 q.put_nowait(event_data)
-            except queue.Full:
-                dead.append(q)
-        for q in dead:
-            _sse_clients.remove(q)
+            except asyncio.QueueFull:
+                pass
 
 
-def dispatch_event(app, event_data):
-    thread = threading.Thread(
-        target=_send_to_subscribers,
-        args=(app, event_data),
-        daemon=True
-    )
-    thread.start()
+async def dispatch_event(event_data: dict) -> None:
+    """Broadcast to SSE clients immediately, then deliver webhooks in background."""
+    await _broadcast_to_sse(event_data)
+    asyncio.create_task(_deliver_webhooks(event_data))
 
 
-def _send_to_subscribers(app, event_data):
-    _broadcast_to_sse(event_data)
-    with app.app_context():
-        from .database import get_db
-        db = get_db()
+async def _deliver_webhooks(event_data: dict) -> None:
+    await asyncio.to_thread(_send_to_subscribers, event_data)
+
+
+def _send_to_subscribers(event_data: dict) -> None:
+    db = sqlite3.connect(_DB_PATH)
+    db.row_factory = sqlite3.Row
+    try:
         rows = db.execute('SELECT * FROM event_subscriptions').fetchall()
         for row in rows:
-            if not _matches_filter(row, event_data):
-                continue
-            _post_event(row['destination'], event_data)
+            if _matches_filter(row, event_data):
+                _post_event(row['destination'], event_data)
+    finally:
+        db.close()
 
 
-def _matches_filter(row, event_data):
+def _matches_filter(row, event_data: dict) -> bool:
     event_types = json.loads(row['event_types']) if row['event_types'] else []
     if not event_types:
         return True
@@ -66,7 +66,7 @@ def _matches_filter(row, event_data):
     return events[0].get('EventType', '') in event_types
 
 
-def _post_event(destination, event_data):
+def _post_event(destination: str, event_data: dict) -> None:
     try:
         payload = json.dumps(event_data).encode('utf-8')
         req = urllib.request.Request(

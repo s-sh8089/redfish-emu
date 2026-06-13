@@ -1,7 +1,8 @@
-from flask import Blueprint
+from fastapi import APIRouter, Depends
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response
 
-bp = Blueprint('registries', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 REGISTRIES = {
     'Base': {
@@ -31,7 +32,7 @@ REGISTRIES = {
 }
 
 
-@bp.route('/redfish/v1/Registries/')
+@router.get('/redfish/v1/Registries/')
 def registries():
     members = [{'@odata.id': f'/redfish/v1/Registries/{k}/'} for k in REGISTRIES]
     return json_response({
@@ -44,8 +45,8 @@ def registries():
     })
 
 
-@bp.route('/redfish/v1/Registries/<registry_id>/')
-def registry(registry_id):
+@router.get('/redfish/v1/Registries/{registry_id}/')
+def registry(registry_id: str):
     reg = REGISTRIES.get(registry_id)
     if not reg:
         return not_found_response()

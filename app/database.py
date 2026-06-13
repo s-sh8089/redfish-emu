@@ -3,23 +3,18 @@ import os
 import json
 import uuid
 from datetime import datetime, timezone
-from flask import g, current_app
+
+_DB_PATH = os.environ.get('DB_PATH', 'data/redfish.db')
 
 
 def get_db():
-    if 'db' not in g:
-        g.db = sqlite3.connect(
-            current_app.config['DB_PATH'],
-            detect_types=sqlite3.PARSE_DECLTYPES
-        )
-        g.db.row_factory = sqlite3.Row
-        g.db.execute('PRAGMA journal_mode=WAL')
-    return g.db
-
-
-def close_db(e=None):
-    db = g.pop('db', None)
-    if db is not None:
+    """FastAPI Depends generator: yields a sqlite3 connection scoped to the request."""
+    db = sqlite3.connect(_DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+    db.row_factory = sqlite3.Row
+    db.execute('PRAGMA journal_mode=WAL')
+    try:
+        yield db
+    finally:
         db.close()
 
 
@@ -932,10 +927,9 @@ def _migrate_passwords(db):
     db.commit()
 
 
-def init_db(app):
-    db_path = app.config['DB_PATH']
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    db = sqlite3.connect(db_path)
+def init_db():
+    os.makedirs(os.path.dirname(os.path.abspath(_DB_PATH)), exist_ok=True)
+    db = sqlite3.connect(_DB_PATH)
     db.row_factory = sqlite3.Row
     _create_tables(db)
     _migrate_tables(db)
