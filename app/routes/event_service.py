@@ -1,18 +1,20 @@
+import asyncio
 import json
-import queue
+import sqlite3
 import uuid
 from datetime import datetime, timezone
-from flask import Blueprint, request, current_app, Response, stream_with_context
+from fastapi import APIRouter, Depends, Body, Request
+from sse_starlette.sse import EventSourceResponse
 from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
 from ..event_dispatcher import dispatch_event, add_sse_client, remove_sse_client
 
-bp = Blueprint('event_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/EventService/')
-def event_service():
-    db = get_db()
+@router.get('/redfish/v1/EventService/')
+def event_service(db: sqlite3.Connection = Depends(get_db)):
     count = db.execute('SELECT COUNT(*) FROM event_subscriptions').fetchone()[0]
     return json_response({
         '@odata.id': '/redfish/v1/EventService/',
@@ -45,22 +47,26 @@ def event_service():
     })
 
 
-@bp.route('/redfish/v1/EventService/Subscriptions/', methods=['GET', 'POST'])
-def subscriptions():
-    db = get_db()
-    if request.method == 'GET':
-        rows = db.execute('SELECT id FROM event_subscriptions').fetchall()
-        members = [{'@odata.id': f'/redfish/v1/EventService/Subscriptions/{row["id"]}/'}
-                   for row in rows]
-        return json_response({
-            '@odata.id': '/redfish/v1/EventService/Subscriptions/',
-            '@odata.type': '#EventDestinationCollection.EventDestinationCollection',
-            'Name': 'Event Subscriptions Collection',
-            'Members@odata.count': len(members),
-            'Members': members
-        })
+@router.get('/redfish/v1/EventService/Subscriptions/')
+def subscriptions_get(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute('SELECT id FROM event_subscriptions').fetchall()
+    members = [{'@odata.id': f'/redfish/v1/EventService/Subscriptions/{row["id"]}/'}
+               for row in rows]
+    return json_response({
+        '@odata.id': '/redfish/v1/EventService/Subscriptions/',
+        '@odata.type': '#EventDestinationCollection.EventDestinationCollection',
+        'Name': 'Event Subscriptions Collection',
+        'Members@odata.count': len(members),
+        'Members': members
+    })
 
-    data = request.get_json()
+
+@router.post('/redfish/v1/EventService/Subscriptions/')
+def subscriptions_post(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     if not data or 'Destination' not in data:
         return bad_request_response('Destination is required.')
     sub_id = str(uuid.uuid4()).replace('-', '')[:12]
@@ -84,57 +90,59 @@ def subscriptions():
     )
 
 
-@bp.route('/redfish/v1/EventService/Subscriptions/<sub_id>/', methods=['GET', 'PATCH', 'DELETE'])
-def subscription(sub_id):
-    db = get_db()
+@router.get('/redfish/v1/EventService/Subscriptions/{sub_id}/')
+def subscription_get(sub_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
     if not row:
         return not_found_response()
+    return json_response(_subscription_to_dict(row))
 
-    if request.method == 'GET':
-        return json_response(_subscription_to_dict(row))
 
-    elif request.method == 'PATCH':
-        data = request.get_json() or {}
-        fields = []
-        values = []
-        if 'Context' in data:
-            fields.append('context=?')
-            values.append(data['Context'])
-        if 'EventTypes' in data:
-            fields.append('event_types=?')
-            values.append(json.dumps(data['EventTypes']))
-        if 'OriginResources' in data:
-            fields.append('origin_resources=?')
-            values.append(json.dumps(data['OriginResources']))
-        if 'RegistryPrefixes' in data:
-            fields.append('registry_prefixes=?')
-            values.append(json.dumps(data['RegistryPrefixes']))
-        if 'MessageIds' in data:
-            fields.append('message_ids=?')
-            values.append(json.dumps(data['MessageIds']))
-        if 'ResourceTypes' in data:
-            fields.append('resource_types=?')
-            values.append(json.dumps(data['ResourceTypes']))
-        if fields:
-            values.append(sub_id)
-            db.execute(f'UPDATE event_subscriptions SET {", ".join(fields)} WHERE id=?', values)
-            db.commit()
-        row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
-        return json_response(_subscription_to_dict(row))
-
-    else:
-        db.execute('DELETE FROM event_subscriptions WHERE id=?', (sub_id,))
+@router.patch('/redfish/v1/EventService/Subscriptions/{sub_id}/')
+def subscription_patch(
+    sub_id: str,
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
+    if not row:
+        return not_found_response()
+    data = body or {}
+    fields, values = [], []
+    if 'Context' in data:
+        fields.append('context=?'); values.append(data['Context'])
+    if 'EventTypes' in data:
+        fields.append('event_types=?'); values.append(json.dumps(data['EventTypes']))
+    if 'OriginResources' in data:
+        fields.append('origin_resources=?'); values.append(json.dumps(data['OriginResources']))
+    if 'RegistryPrefixes' in data:
+        fields.append('registry_prefixes=?'); values.append(json.dumps(data['RegistryPrefixes']))
+    if 'MessageIds' in data:
+        fields.append('message_ids=?'); values.append(json.dumps(data['MessageIds']))
+    if 'ResourceTypes' in data:
+        fields.append('resource_types=?'); values.append(json.dumps(data['ResourceTypes']))
+    if fields:
+        values.append(sub_id)
+        db.execute(f'UPDATE event_subscriptions SET {", ".join(fields)} WHERE id=?', values)
         db.commit()
-        return no_content_response()
+    row = db.execute('SELECT * FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone()
+    return json_response(_subscription_to_dict(row))
 
 
-@bp.route('/redfish/v1/EventService/Actions/EventService.SubmitTestEvent', methods=['POST'])
-def submit_test_event():
-    data = request.get_json() or {}
+@router.delete('/redfish/v1/EventService/Subscriptions/{sub_id}/')
+def subscription_delete(sub_id: str, db: sqlite3.Connection = Depends(get_db)):
+    if not db.execute('SELECT id FROM event_subscriptions WHERE id=?', (sub_id,)).fetchone():
+        return not_found_response()
+    db.execute('DELETE FROM event_subscriptions WHERE id=?', (sub_id,))
+    db.commit()
+    return no_content_response()
+
+
+@router.post('/redfish/v1/EventService/Actions/EventService.SubmitTestEvent')
+async def submit_test_event(body: dict | None = Body(default=None)):
+    data = body or {}
     event_id = str(uuid.uuid4()).replace('-', '')[:8]
     now = datetime.now(timezone.utc).isoformat()
-
     event_payload = {
         '@odata.type': '#Event.v1_7_0.Event',
         'Id': event_id,
@@ -151,40 +159,30 @@ def submit_test_event():
             'OriginOfCondition': {'@odata.id': data.get('OriginOfCondition', '/redfish/v1/')}
         }]
     }
-
-    dispatch_event(current_app._get_current_object(), event_payload)
+    await dispatch_event(event_payload)
     return no_content_response()
 
 
-@bp.route('/redfish/v1/EventService/SSE')
-def sse_stream():
-    def generate():
-        q = add_sse_client()
+@router.get('/redfish/v1/EventService/SSE')
+async def sse_stream(request: Request):
+    q = await add_sse_client()
+
+    async def generator():
         try:
-            yield ': Redfish SSE stream\n\n'
+            yield {'comment': 'Redfish SSE stream'}
             while True:
                 try:
-                    event = q.get(timeout=30)
-                    yield f'data: {json.dumps(event)}\n\n'
-                except queue.Empty:
-                    yield ': heartbeat\n\n'
-        except GeneratorExit:
-            pass
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield {'data': json.dumps(event)}
+                except asyncio.TimeoutError:
+                    yield {'comment': 'heartbeat'}
         finally:
-            remove_sse_client(q)
+            await remove_sse_client(q)
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no',
-            'OData-Version': '4.0'
-        }
-    )
+    return EventSourceResponse(generator(), headers={'OData-Version': '4.0'})
 
 
-def _subscription_to_dict(row):
+def _subscription_to_dict(row) -> dict:
     event_types = json.loads(row['event_types']) if row['event_types'] else []
     origin_resources = json.loads(row['origin_resources']) if row['origin_resources'] else []
     registry_prefixes = json.loads(row['registry_prefixes']) if row['registry_prefixes'] else []

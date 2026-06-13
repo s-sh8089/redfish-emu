@@ -1,13 +1,14 @@
-from flask import Blueprint
+import sqlite3
+from fastapi import APIRouter, Depends
 from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response
 
-bp = Blueprint('cables', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/Cables/')
-def cables():
-    db = get_db()
+@router.get('/redfish/v1/Cables/')
+def cables(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM cables').fetchall()
     members = [{'@odata.id': f'/redfish/v1/Cables/{row["id"]}/'} for row in rows]
     return json_response({
@@ -20,9 +21,8 @@ def cables():
     })
 
 
-@bp.route('/redfish/v1/Cables/<cable_id>/')
-def cable(cable_id):
-    db = get_db()
+@router.get('/redfish/v1/Cables/{cable_id}/')
+def cable(cable_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM cables WHERE id=?', (cable_id,)).fetchone()
     if not row:
         return not_found_response()

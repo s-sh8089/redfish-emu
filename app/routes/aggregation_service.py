@@ -1,16 +1,16 @@
-from flask import Blueprint
+import sqlite3
+from fastapi import APIRouter, Depends
 from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response
 
-bp = Blueprint('aggregation_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 BASE = '/redfish/v1/AggregationService'
 
 
-@bp.route('/redfish/v1/AggregationService/')
-def aggregation_service():
-    db = get_db()
-    count = db.execute('SELECT COUNT(*) FROM aggregation_sources').fetchone()[0]
+@router.get('/redfish/v1/AggregationService/')
+def aggregation_service(db: sqlite3.Connection = Depends(get_db)):
     return json_response({
         '@odata.id': f'{BASE}/',
         '@odata.type': '#AggregationService.v1_0_1.AggregationService',
@@ -22,9 +22,8 @@ def aggregation_service():
     })
 
 
-@bp.route('/redfish/v1/AggregationService/AggregationSources')
-def aggregation_sources():
-    db = get_db()
+@router.get('/redfish/v1/AggregationService/AggregationSources')
+def aggregation_sources(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM aggregation_sources').fetchall()
     members = [{'@odata.id': f'{BASE}/AggregationSources/{row["id"]}'}
                for row in rows]
@@ -37,9 +36,8 @@ def aggregation_sources():
     })
 
 
-@bp.route('/redfish/v1/AggregationService/AggregationSources/<source_id>')
-def aggregation_source(source_id):
-    db = get_db()
+@router.get('/redfish/v1/AggregationService/AggregationSources/{source_id}')
+def aggregation_source(source_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM aggregation_sources WHERE id=?', (source_id,)).fetchone()
     if not row:
         return not_found_response()

@@ -1,24 +1,26 @@
 import hashlib
 import json
 from datetime import datetime, timezone
-from flask import jsonify, make_response, request
+from fastapi import Request
+from fastapi.responses import JSONResponse, Response
+
+_ODATA_HEADERS = {'OData-Version': '4.0'}
 
 
-def json_response(data, status=200):
-    resp = make_response(jsonify(data), status)
-    resp.headers['Content-Type'] = 'application/json'
-    resp.headers['OData-Version'] = '4.0'
-    return resp
+def json_response(data: dict, status: int = 200) -> JSONResponse:
+    return JSONResponse(content=data, status_code=status, headers=_ODATA_HEADERS)
 
 
-def etag_response(data, status=200):
-    resp = json_response(data, status)
+def etag_response(data: dict, status: int = 200) -> JSONResponse:
     etag = hashlib.md5(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
-    resp.headers['ETag'] = f'"{etag}"'
-    return resp
+    return JSONResponse(
+        content=data,
+        status_code=status,
+        headers={**_ODATA_HEADERS, 'ETag': f'"{etag}"'},
+    )
 
 
-def not_found_response():
+def not_found_response() -> JSONResponse:
     return json_response({
         "error": {
             "code": "Base.1.0.ResourceNotFound",
@@ -28,7 +30,7 @@ def not_found_response():
     }, 404)
 
 
-def bad_request_response(message="Bad request"):
+def bad_request_response(message: str = "Bad request") -> JSONResponse:
     return json_response({
         "error": {
             "code": "Base.1.0.GeneralError",
@@ -38,43 +40,43 @@ def bad_request_response(message="Bad request"):
     }, 400)
 
 
-def method_not_allowed_response(allowed=None):
-    resp = json_response({
-        "error": {
-            "code": "Base.1.0.OperationNotAllowed",
-            "message": "The HTTP method is not allowed for this resource.",
-            "@Message.ExtendedInfo": []
-        }
-    }, 405)
+def method_not_allowed_response(allowed=None) -> JSONResponse:
+    headers = dict(_ODATA_HEADERS)
     if allowed:
-        resp.headers['Allow'] = ', '.join(allowed)
-    return resp
+        headers['Allow'] = ', '.join(allowed)
+    return JSONResponse(
+        content={
+            "error": {
+                "code": "Base.1.0.OperationNotAllowed",
+                "message": "The HTTP method is not allowed for this resource.",
+                "@Message.ExtendedInfo": []
+            }
+        },
+        status_code=405,
+        headers=headers,
+    )
 
 
-def created_response(data, location=None):
-    resp = make_response(jsonify(data), 201)
-    resp.headers['Content-Type'] = 'application/json'
-    resp.headers['OData-Version'] = '4.0'
+def created_response(data: dict, location: str = None) -> JSONResponse:
+    headers = dict(_ODATA_HEADERS)
     if location:
-        resp.headers['Location'] = location
-    return resp
+        headers['Location'] = location
+    return JSONResponse(content=data, status_code=201, headers=headers)
 
 
-def no_content_response():
-    resp = make_response('', 204)
-    resp.headers['OData-Version'] = '4.0'
-    return resp
+def no_content_response() -> Response:
+    return Response(status_code=204, headers=_ODATA_HEADERS)
 
 
-def apply_odata_params(members):
+def apply_odata_params(members: list, request: Request) -> list:
     """Apply $top and $skip OData query parameters to a list."""
     try:
-        skip = int(request.args.get('$skip', 0))
+        skip = int(request.query_params.get('$skip', 0))
         members = members[max(0, skip):]
     except (ValueError, TypeError):
         pass
     try:
-        top = request.args.get('$top')
+        top = request.query_params.get('$top')
         if top is not None:
             members = members[:int(top)]
     except (ValueError, TypeError):
@@ -82,15 +84,15 @@ def apply_odata_params(members):
     return members
 
 
-def odata_context(schema_type):
+def odata_context(schema_type: str) -> str:
     return f'/redfish/v1/$metadata#{schema_type}'
 
 
-def now_iso():
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def log_entry_to_dict(row, odata_id):
+def log_entry_to_dict(row, odata_id: str) -> dict:
     args = json.loads(row['message_args']) if row['message_args'] else []
     d = {
         '@odata.id': odata_id,

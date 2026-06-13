@@ -1,14 +1,15 @@
 import json
-import uuid
+import sqlite3
 from datetime import datetime, timezone
-from flask import Blueprint, request
+from fastapi import APIRouter, Depends, Body
 from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response, bad_request_response, created_response, no_content_response
 
-bp = Blueprint('certificate_service', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/CertificateService/')
+@router.get('/redfish/v1/CertificateService/')
 def certificate_service():
     return json_response({
         '@odata.id': '/redfish/v1/CertificateService/',
@@ -28,9 +29,8 @@ def certificate_service():
     })
 
 
-@bp.route('/redfish/v1/CertificateService/CertificateLocations/')
-def certificate_locations():
-    db = get_db()
+@router.get('/redfish/v1/CertificateService/CertificateLocations/')
+def certificate_locations(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id, parent_path FROM certificates').fetchall()
     certs = [{'@odata.id': f'{row["parent_path"]}/{row["id"]}/'.replace('//', '/')}
              for row in rows]
@@ -47,11 +47,10 @@ def certificate_locations():
     })
 
 
-@bp.route('/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR', methods=['POST'])
-def generate_csr():
-    data = request.get_json() or {}
-    required = ['CommonName', 'CertificateCollection']
-    for field in required:
+@router.post('/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR')
+def generate_csr(body: dict | None = Body(default=None)):
+    data = body or {}
+    for field in ['CommonName', 'CertificateCollection']:
         if field not in data:
             return bad_request_response(f'{field} is required.')
     csr_string = (
@@ -67,21 +66,19 @@ def generate_csr():
     })
 
 
-@bp.route('/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate', methods=['POST'])
-def replace_certificate():
-    data = request.get_json() or {}
+@router.post('/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate')
+def replace_certificate(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     if 'CertificateString' not in data or 'CertificateType' not in data or 'CertificateUri' not in data:
         return bad_request_response('CertificateString, CertificateType and CertificateUri are required.')
     uri = data['CertificateUri'].get('@odata.id', '') if isinstance(data['CertificateUri'], dict) else data['CertificateUri']
     cert_id = uri.rstrip('/').split('/')[-1]
-    parent_path = '/'.join(uri.rstrip('/').split('/')[:-1])
-    db = get_db()
-    row = db.execute('SELECT id FROM certificates WHERE id=?', (cert_id,)).fetchone()
-    if not row:
+    if not db.execute('SELECT id FROM certificates WHERE id=?', (cert_id,)).fetchone():
         return not_found_response()
     now = datetime.now(timezone.utc).isoformat()
-    issuer = json.dumps({'CommonName': 'Replaced Certificate'})
-    subject = json.dumps({'CommonName': 'Replaced Certificate'})
     db.execute(
         'UPDATE certificates SET certificate_string=?, valid_not_before=?, valid_not_after=? WHERE id=?',
         (data['CertificateString'], now, now, cert_id)
@@ -90,12 +87,14 @@ def replace_certificate():
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/', methods=['POST'])
-def create_https_certificate():
-    data = request.get_json() or {}
+@router.post('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/')
+def create_https_certificate(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
     if 'CertificateString' not in data or 'CertificateType' not in data:
         return bad_request_response('CertificateString and CertificateType are required.')
-    db = get_db()
     count = db.execute(
         "SELECT COUNT(*) FROM certificates WHERE parent_path=?",
         ('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates',)

@@ -1,17 +1,20 @@
 import json
 import re
+import sqlite3
 import uuid
 from datetime import datetime, timezone
-from flask import Blueprint, request
+from fastapi import APIRouter, Depends, Body
 from ..database import get_db
-from ..helpers import json_response, not_found_response, bad_request_response, no_content_response, created_response, log_entry_to_dict, now_iso
+from ..auth import verify_auth
+from ..helpers import (json_response, not_found_response, bad_request_response,
+                       no_content_response, created_response, log_entry_to_dict, now_iso)
 
-bp = Blueprint('managers', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 BASE = '/redfish/v1/Managers'
 
 
-@bp.route('/redfish/v1/Managers/')
+@router.get('/redfish/v1/Managers/')
 def managers():
     return json_response({
         '@odata.id': '/redfish/v1/Managers/',
@@ -22,57 +25,58 @@ def managers():
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/', methods=['GET', 'PATCH'])
-def manager_bmc():
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/')
+def manager_bmc_get(db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
     if not row:
         return not_found_response()
+    return _manager_bmc_response(row)
 
-    if request.method == 'PATCH':
-        data = request.get_json() or {}
-        fields = []
-        values = []
-        if 'DateTime' in data:
-            try:
-                datetime.fromisoformat(data['DateTime'])
-            except (ValueError, TypeError):
-                return bad_request_response('DateTime must be a valid ISO 8601 datetime string')
-            fields.append('datetime=?')
-            values.append(data['DateTime'])
-        if 'DateTimeLocalOffset' in data:
-            if not re.match(r'^[+-]\d{2}:\d{2}$', str(data['DateTimeLocalOffset'])):
-                return bad_request_response('DateTimeLocalOffset must be in format +HH:MM or -HH:MM')
-            fields.append('datetime_local_offset=?')
-            values.append(data['DateTimeLocalOffset'])
-        if fields:
-            values.append('bmc')
-            db.execute(f'UPDATE managers SET {", ".join(fields)} WHERE id=?', values)
-            db.commit()
-        row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
 
-    # PATCH で日時が設定されていれば DB の値を返し、未設定なら現在時刻を返す
+@router.patch('/redfish/v1/Managers/bmc/')
+def manager_bmc_patch(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
+    if not row:
+        return not_found_response()
+    data = body or {}
+    fields, values = [], []
+    if 'DateTime' in data:
+        try:
+            datetime.fromisoformat(data['DateTime'])
+        except (ValueError, TypeError):
+            return bad_request_response('DateTime must be a valid ISO 8601 datetime string')
+        fields.append('datetime=?'); values.append(data['DateTime'])
+    if 'DateTimeLocalOffset' in data:
+        if not re.match(r'^[+-]\d{2}:\d{2}$', str(data['DateTimeLocalOffset'])):
+            return bad_request_response('DateTimeLocalOffset must be in format +HH:MM or -HH:MM')
+        fields.append('datetime_local_offset=?'); values.append(data['DateTimeLocalOffset'])
+    if fields:
+        values.append('bmc')
+        db.execute(f'UPDATE managers SET {", ".join(fields)} WHERE id=?', values)
+        db.commit()
+    row = db.execute('SELECT * FROM managers WHERE id="bmc"').fetchone()
+    return _manager_bmc_response(row)
+
+
+def _manager_bmc_response(row):
     dt = row['datetime'] if row['datetime'] else datetime.now(timezone.utc).isoformat()
-
     return json_response({
         '@odata.id': '/redfish/v1/Managers/bmc/',
         '@odata.type': '#Manager.v1_17_0.Manager',
-        'Id': 'bmc',
-        'Name': 'OpenBmc Manager',
+        'Id': 'bmc', 'Name': 'OpenBmc Manager',
         'ManagerType': row['manager_type'],
         'Description': row['description'],
         'FirmwareVersion': row['firmware_version'],
-        'Model': row['model'],
-        'Manufacturer': row['manufacturer'],
-        'SerialNumber': row['serial_number'],
-        'PartNumber': row['part_number'],
+        'Model': row['model'], 'Manufacturer': row['manufacturer'],
+        'SerialNumber': row['serial_number'], 'PartNumber': row['part_number'],
         'SparePartNumber': row['spare_part_number'],
         'PowerState': row['power_state'],
-        'DateTime': dt,
-        'DateTimeLocalOffset': row['datetime_local_offset'],
+        'DateTime': dt, 'DateTimeLocalOffset': row['datetime_local_offset'],
         'LastResetTime': row['last_reset_time'],
-        'UUID': row['uuid'],
-        'ServiceEntryPointUUID': row['service_entry_point_uuid'],
+        'UUID': row['uuid'], 'ServiceEntryPointUUID': row['service_entry_point_uuid'],
         'Status': {'State': row['status_state'], 'Health': row['status_health']},
         'EthernetInterfaces': {'@odata.id': f'{BASE}/bmc/EthernetInterfaces/'},
         'LogServices': {'@odata.id': f'{BASE}/bmc/LogServices/'},
@@ -103,12 +107,14 @@ def manager_bmc():
 _MANAGER_RESET_TYPES = {'GracefulRestart', 'ForceRestart'}
 
 
-@bp.route('/redfish/v1/Managers/bmc/Actions/Manager.Reset', methods=['POST'])
-def manager_bmc_reset():
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/Actions/Manager.Reset')
+def manager_bmc_reset(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
     if not db.execute('SELECT id FROM managers WHERE id="bmc"').fetchone():
         return not_found_response()
-    data = request.get_json() or {}
+    data = body or {}
     reset_type = data.get('ResetType')
     if reset_type not in _MANAGER_RESET_TYPES:
         return bad_request_response(f'Invalid ResetType. Allowable values: {sorted(_MANAGER_RESET_TYPES)}')
@@ -117,25 +123,31 @@ def manager_bmc_reset():
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Managers/bmc/EthernetInterfaces/')
-def bmc_ethernet_interfaces():
-    db = get_db()
-    rows = db.execute("SELECT id FROM ethernet_interfaces WHERE parent_type='manager' AND parent_id='bmc'").fetchall()
-    members = [{'@odata.id': f'{BASE}/bmc/EthernetInterfaces/{row["id"]}/'}
-               for row in rows]
+@router.post('/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover')
+def manager_force_failover(body: dict | None = Body(default=None)):
+    data = body or {}
+    if not data.get('NewManager'):
+        return bad_request_response('NewManager is required.')
+    return no_content_response()
+
+
+@router.get('/redfish/v1/Managers/bmc/EthernetInterfaces/')
+def bmc_ethernet_interfaces(db: sqlite3.Connection = Depends(get_db)):
+    rows = db.execute(
+        "SELECT id FROM ethernet_interfaces WHERE parent_type='manager' AND parent_id='bmc'"
+    ).fetchall()
+    members = [{'@odata.id': f'{BASE}/bmc/EthernetInterfaces/{row["id"]}/'} for row in rows]
     return json_response({
         '@odata.id': f'{BASE}/bmc/EthernetInterfaces/',
         '@odata.type': '#EthernetInterfaceCollection.EthernetInterfaceCollection',
         'Name': 'Ethernet Interface Collection',
         'Description': 'List of Ethernet Interfaces for this Manager',
-        'Members@odata.count': len(members),
-        'Members': members
+        'Members@odata.count': len(members), 'Members': members
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/EthernetInterfaces/<iface_id>/')
-def bmc_ethernet_interface(iface_id):
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/EthernetInterfaces/{iface_id}/')
+def bmc_ethernet_interface(iface_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute(
         "SELECT * FROM ethernet_interfaces WHERE id=? AND parent_type='manager' AND parent_id='bmc'",
         (iface_id,)
@@ -153,160 +165,153 @@ def bmc_ethernet_interface(iface_id):
     return json_response({
         '@odata.id': f'{BASE}/bmc/EthernetInterfaces/{iface_id}/',
         '@odata.type': '#EthernetInterface.v1_12_0.EthernetInterface',
-        'Id': iface_id,
-        'Name': iface_id,
+        'Id': iface_id, 'Name': iface_id,
         'Description': f'Management Network Interface {iface_id}',
-        'MACAddress': row['mac_address'],
-        'FQDN': row['fqdn'],
-        'HostName': row['hostname'],
+        'MACAddress': row['mac_address'], 'FQDN': row['fqdn'], 'HostName': row['hostname'],
         'InterfaceEnabled': bool(row['interface_enabled']),
-        'LinkStatus': row['link_status'],
-        'SpeedMbps': row['speed_mbps'],
-        'IPv4Addresses': ipv4,
-        'IPv4StaticAddresses': ipv4_static,
-        'IPv6Addresses': ipv6,
-        'IPv6StaticAddresses': ipv6_static,
+        'LinkStatus': row['link_status'], 'SpeedMbps': row['speed_mbps'],
+        'IPv4Addresses': ipv4, 'IPv4StaticAddresses': ipv4_static,
+        'IPv6Addresses': ipv6, 'IPv6StaticAddresses': ipv6_static,
         'IPv6DefaultGateway': row['ipv6_default_gateway'] or '::',
         'IPv6AddressPolicyTable': [],
-        'NameServers': dns,
-        'StaticNameServers': static_dns,
-        'DHCPv4': dhcpv4,
-        'DHCPv6': dhcpv6,
+        'NameServers': dns, 'StaticNameServers': static_dns,
+        'DHCPv4': dhcpv4, 'DHCPv6': dhcpv6,
         'VLANs': {'@odata.id': f'{BASE}/bmc/EthernetInterfaces/{iface_id}/VLANs/'},
         'Status': {'State': row['status_state'], 'Health': row['status_health']}
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/EthernetInterfaces/<iface_id>/VLANs/')
-def bmc_vlans(iface_id):
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/EthernetInterfaces/{iface_id}/VLANs/')
+def bmc_vlans(iface_id: str, db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT * FROM vlans WHERE ethernet_interface_id=?', (iface_id,)).fetchall()
-    members = []
-    for v in rows:
-        members.append({
-            '@odata.id': f'{BASE}/bmc/EthernetInterfaces/{iface_id}/VLANs/{v["id"]}/',
-            'VLANEnable': bool(v['vlan_enable']),
-            'VLANId': v['vlan_id']
-        })
+    members = [{
+        '@odata.id': f'{BASE}/bmc/EthernetInterfaces/{iface_id}/VLANs/{v["id"]}/',
+        'VLANEnable': bool(v['vlan_enable']), 'VLANId': v['vlan_id']
+    } for v in rows]
     return json_response({
         '@odata.id': f'{BASE}/bmc/EthernetInterfaces/{iface_id}/VLANs/',
         '@odata.type': '#VLanNetworkInterfaceCollection.VLanNetworkInterfaceCollection',
         'Name': 'VLAN Network Interface Collection',
-        'Members@odata.count': len(members),
-        'Members': members
+        'Members@odata.count': len(members), 'Members': members
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/')
+@router.get('/redfish/v1/Managers/bmc/LogServices/')
 def bmc_log_services():
     return json_response({
         '@odata.id': f'{BASE}/bmc/LogServices/',
         '@odata.type': '#LogServiceCollection.LogServiceCollection',
-        'Name': 'Log Service Collection',
-        'Description': 'List of log services',
+        'Name': 'Log Service Collection', 'Description': 'List of log services',
         'Members@odata.count': 1,
         'Members': [{'@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/'}]
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/')
+@router.get('/redfish/v1/Managers/bmc/LogServices/RedfishLog/')
 def bmc_redfishlog():
-    now = datetime.now(timezone.utc).isoformat()
     return json_response({
         '@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/',
         '@odata.type': '#LogService.v1_4_0.LogService',
-        'Id': 'RedfishLog',
-        'Name': 'Redfish Log',
-        'Description': 'Redfish Log Service',
-        'DateTime': now,
-        'MaxNumberOfRecords': 4096,
-        'OverWritePolicy': 'WrapsWhenFull',
+        'Id': 'RedfishLog', 'Name': 'Redfish Log', 'Description': 'Redfish Log Service',
+        'DateTime': datetime.now(timezone.utc).isoformat(),
+        'MaxNumberOfRecords': 4096, 'OverWritePolicy': 'WrapsWhenFull',
         'Entries': {'@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/Entries/'},
         'Status': {'State': 'Enabled', 'Health': 'OK'},
-        'Actions': {
-            '#LogService.ClearLog': {
-                'target': f'{BASE}/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog'
-            }
-        }
+        'Actions': {'#LogService.ClearLog': {
+            'target': f'{BASE}/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog'
+        }}
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog', methods=['POST'])
-def bmc_redfishlog_clear():
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog')
+def bmc_redfishlog_clear(db: sqlite3.Connection = Depends(get_db)):
     db.execute("DELETE FROM log_entries WHERE log_service_id='RedfishLog' AND parent_type='manager'")
     db.commit()
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/', methods=['GET', 'POST'])
-def bmc_log_entries():
-    db = get_db()
-    if request.method == 'POST':
-        return _create_log_entry(db, 'RedfishLog', 'manager',
-                                 f'{BASE}/bmc/LogServices/RedfishLog/Entries/')
+@router.get('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/')
+def bmc_log_entries(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute(
         "SELECT * FROM log_entries WHERE log_service_id='RedfishLog' AND parent_type='manager'"
     ).fetchall()
-    members = [{'@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/Entries/{row["id"]}/'}
-               for row in rows]
+    members = [{'@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/Entries/{row["id"]}/'} for row in rows]
     return json_response({
         '@odata.id': f'{BASE}/bmc/LogServices/RedfishLog/Entries/',
         '@odata.type': '#LogEntryCollection.LogEntryCollection',
-        'Name': 'Log Entry Collection',
-        'Description': 'Collection of log entries',
-        'Members@odata.count': len(members),
-        'Members': members
+        'Name': 'Log Entry Collection', 'Description': 'Collection of log entries',
+        'Members@odata.count': len(members), 'Members': members
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/<entry_id>/', methods=['GET', 'PATCH', 'DELETE'])
-def bmc_log_entry(entry_id):
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/')
+def bmc_log_entries_post(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    return _create_log_entry(db, 'RedfishLog', 'manager',
+                             f'{BASE}/bmc/LogServices/RedfishLog/Entries/', body or {})
+
+
+@router.get('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{entry_id}/')
+def bmc_log_entry_get(entry_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute(
         "SELECT * FROM log_entries WHERE id=? AND log_service_id='RedfishLog' AND parent_type='manager'",
         (entry_id,)
     ).fetchone()
     if not row:
         return not_found_response()
+    return json_response(log_entry_to_dict(row, f'{BASE}/bmc/LogServices/RedfishLog/Entries/{entry_id}/'))
+
+
+@router.patch('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{entry_id}/')
+def bmc_log_entry_patch(
+    entry_id: str,
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
     odata_id = f'{BASE}/bmc/LogServices/RedfishLog/Entries/{entry_id}/'
-    if request.method == 'PATCH':
-        return _patch_log_entry(db, entry_id, odata_id)
-    if request.method == 'DELETE':
-        db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
-        db.commit()
-        return no_content_response()
-    return json_response(log_entry_to_dict(row, odata_id))
+    if not db.execute(
+        "SELECT id FROM log_entries WHERE id=? AND log_service_id='RedfishLog' AND parent_type='manager'",
+        (entry_id,)
+    ).fetchone():
+        return not_found_response()
+    return _patch_log_entry(db, entry_id, odata_id, body or {})
 
 
-@bp.route('/redfish/v1/Managers/bmc/ManagerDiagnosticData/')
+@router.delete('/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{entry_id}/')
+def bmc_log_entry_delete(entry_id: str, db: sqlite3.Connection = Depends(get_db)):
+    if not db.execute(
+        "SELECT id FROM log_entries WHERE id=? AND log_service_id='RedfishLog' AND parent_type='manager'",
+        (entry_id,)
+    ).fetchone():
+        return not_found_response()
+    db.execute('DELETE FROM log_entries WHERE id=?', (entry_id,))
+    db.commit()
+    return no_content_response()
+
+
+@router.get('/redfish/v1/Managers/bmc/ManagerDiagnosticData/')
 def manager_diagnostic_data():
     return json_response({
         '@odata.id': f'{BASE}/bmc/ManagerDiagnosticData/',
         '@odata.type': '#ManagerDiagnosticData.v1_2_0.ManagerDiagnosticData',
-        'Id': 'ManagerDiagnosticData',
-        'Name': 'Manager Diagnostic Data',
+        'Id': 'ManagerDiagnosticData', 'Name': 'Manager Diagnostic Data',
         'ServiceRootUptimeSeconds': 3600.0,
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/ManagerDiagnosticData/GooglegRPCStatistics')
+@router.get('/redfish/v1/Managers/bmc/ManagerDiagnosticData/GooglegRPCStatistics')
 def grpc_statistics():
     return json_response({
         '@odata.id': f'{BASE}/bmc/ManagerDiagnosticData/GooglegRPCStatistics',
         '@odata.type': '#ManagerDiagnosticData.v1_2_0.ManagerDiagnosticData',
-        'Id': 'GooglegRPCStatistics',
-        'Name': 'gRPC Statistics',
-        'gRPCInitLatencyMs': 0.0,
-        'AuthenticationLatencyMs': 1.2,
-        'QueueLatencyMs': 0.5,
-        'RequestLatencyMs': 2.0,
-        'ProcessingLatencyMs': 1.8,
-        'ResponseLatencyMs': 0.3,
-        'AuthorizedCount': 42,
-        'AuthorizedFailCount': 0,
-        'AuthenticatedCount': 42,
-        'AuthenticatedFailCount': 1,
+        'Id': 'GooglegRPCStatistics', 'Name': 'gRPC Statistics',
+        'gRPCInitLatencyMs': 0.0, 'AuthenticationLatencyMs': 1.2,
+        'QueueLatencyMs': 0.5, 'RequestLatencyMs': 2.0,
+        'ProcessingLatencyMs': 1.8, 'ResponseLatencyMs': 0.3,
+        'AuthorizedCount': 42, 'AuthorizedFailCount': 0,
+        'AuthenticatedCount': 42, 'AuthenticatedFailCount': 1,
         'HTTPMethods': {},
         'HTTPResponseCodes': {'200': 38, '401': 1, '404': 3},
         'gRPCStatusCodes': {}
@@ -323,32 +328,43 @@ _NETWORK_PROTOCOL_DEFAULT = {
 _NETWORK_PROTOCOL_PATCHABLE = {'HTTP', 'HTTPS', 'SSH', 'IPMI', 'NTP'}
 
 
-@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/', methods=['GET', 'PATCH'])
-def network_protocol():
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/NetworkProtocol/')
+def network_protocol_get(db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT network_protocol FROM managers WHERE id="bmc"').fetchone()
     proto = json.loads(row['network_protocol']) if row and row['network_protocol'] else \
         {k: dict(v) for k, v in _NETWORK_PROTOCOL_DEFAULT.items()}
-    if request.method == 'PATCH':
-        data = request.get_json() or {}
-        for key in _NETWORK_PROTOCOL_PATCHABLE:
-            if key in data and isinstance(data[key], dict):
-                current = proto.get(key, dict(_NETWORK_PROTOCOL_DEFAULT.get(key, {})))
-                current.update(data[key])
-                proto[key] = current
-        db.execute('UPDATE managers SET network_protocol=? WHERE id="bmc"', (json.dumps(proto),))
-        db.commit()
+    return _network_protocol_response(proto)
+
+
+@router.patch('/redfish/v1/Managers/bmc/NetworkProtocol/')
+def network_protocol_patch(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    row = db.execute('SELECT network_protocol FROM managers WHERE id="bmc"').fetchone()
+    proto = json.loads(row['network_protocol']) if row and row['network_protocol'] else \
+        {k: dict(v) for k, v in _NETWORK_PROTOCOL_DEFAULT.items()}
+    data = body or {}
+    for key in _NETWORK_PROTOCOL_PATCHABLE:
+        if key in data and isinstance(data[key], dict):
+            current = proto.get(key, dict(_NETWORK_PROTOCOL_DEFAULT.get(key, {})))
+            current.update(data[key])
+            proto[key] = current
+    db.execute('UPDATE managers SET network_protocol=? WHERE id="bmc"', (json.dumps(proto),))
+    db.commit()
+    return _network_protocol_response(proto)
+
+
+def _network_protocol_response(proto):
     https = dict(proto.get('HTTPS', _NETWORK_PROTOCOL_DEFAULT['HTTPS']))
     https['Certificates'] = {'@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/'}
     return json_response({
         '@odata.id': f'{BASE}/bmc/NetworkProtocol/',
         '@odata.type': '#ManagerNetworkProtocol.v1_9_0.ManagerNetworkProtocol',
-        'Id': 'NetworkProtocol',
-        'Name': 'Manager Network Protocol',
+        'Id': 'NetworkProtocol', 'Name': 'Manager Network Protocol',
         'Description': 'Manager Network Services',
         'Status': {'State': 'Enabled', 'Health': 'OK'},
-        'HostName': 'bmc',
-        'FQDN': 'bmc.example.com',
+        'HostName': 'bmc', 'FQDN': 'bmc.example.com',
         'HTTP': proto.get('HTTP', _NETWORK_PROTOCOL_DEFAULT['HTTP']),
         'HTTPS': https,
         'SSH': proto.get('SSH', _NETWORK_PROTOCOL_DEFAULT['SSH']),
@@ -357,56 +373,60 @@ def network_protocol():
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/', methods=['GET', 'POST'])
-def bmc_virtual_media():
-    db = get_db()
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        name = data.get('Name', 'Virtual Media')
-        media_types = data.get('MediaTypes', ['CD', 'DVD'])
-        count = db.execute('SELECT COUNT(*) FROM virtual_media WHERE manager_id="bmc"').fetchone()[0]
-        vm_id = data.get('Id') or f'VM{count + 1}'
-        if db.execute('SELECT id FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone():
-            return bad_request_response(f'VirtualMedia with Id "{vm_id}" already exists')
-        db.execute(
-            '''INSERT INTO virtual_media
-               (id, manager_id, name, media_types, image, image_name, inserted,
-                write_protected, transfer_protocol_type, connected_via)
-               VALUES (?,?,?,?,?,?,?,?,?,?)''',
-            (vm_id, 'bmc', name, json.dumps(media_types), '', '', 0, 0, '', 'NotConnected')
-        )
-        db.commit()
-        row = db.execute('SELECT * FROM virtual_media WHERE id=?', (vm_id,)).fetchone()
-        location = f'{BASE}/bmc/VirtualMedia/{vm_id}/'
-        return created_response(_vm_to_dict(row), location)
-
+@router.get('/redfish/v1/Managers/bmc/VirtualMedia/')
+def bmc_virtual_media_list(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute('SELECT id FROM virtual_media WHERE manager_id="bmc"').fetchall()
-    members = [{'@odata.id': f'{BASE}/bmc/VirtualMedia/{row["id"]}/'}
-               for row in rows]
+    members = [{'@odata.id': f'{BASE}/bmc/VirtualMedia/{row["id"]}/'} for row in rows]
     return json_response({
         '@odata.id': f'{BASE}/bmc/VirtualMedia/',
         '@odata.type': '#VirtualMediaCollection.VirtualMediaCollection',
         'Name': 'Virtual Media Collection',
-        'Members@odata.count': len(members),
-        'Members': members
+        'Members@odata.count': len(members), 'Members': members
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/')
-def bmc_virtual_media_item(vm_id):
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/VirtualMedia/')
+def bmc_virtual_media_post(
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
+    data = body or {}
+    name = data.get('Name', 'Virtual Media')
+    media_types = data.get('MediaTypes', ['CD', 'DVD'])
+    count = db.execute('SELECT COUNT(*) FROM virtual_media WHERE manager_id="bmc"').fetchone()[0]
+    vm_id = data.get('Id') or f'VM{count + 1}'
+    if db.execute('SELECT id FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone():
+        return bad_request_response(f'VirtualMedia with Id "{vm_id}" already exists')
+    db.execute(
+        '''INSERT INTO virtual_media
+           (id, manager_id, name, media_types, image, image_name, inserted,
+            write_protected, transfer_protocol_type, connected_via)
+           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+        (vm_id, 'bmc', name, json.dumps(media_types), '', '', 0, 0, '', 'NotConnected')
+    )
+    db.commit()
+    row = db.execute('SELECT * FROM virtual_media WHERE id=?', (vm_id,)).fetchone()
+    location = f'{BASE}/bmc/VirtualMedia/{vm_id}/'
+    return created_response(_vm_to_dict(row), location)
+
+
+@router.get('/redfish/v1/Managers/bmc/VirtualMedia/{vm_id}/')
+def bmc_virtual_media_item(vm_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT * FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone()
     if not row:
         return not_found_response()
     return json_response(_vm_to_dict(row))
 
 
-@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/Actions/VirtualMedia.InsertMedia', methods=['POST'])
-def bmc_insert_media(vm_id):
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/VirtualMedia/{vm_id}/Actions/VirtualMedia.InsertMedia')
+def bmc_insert_media(
+    vm_id: str,
+    body: dict | None = Body(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+):
     if not db.execute('SELECT id FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone():
         return not_found_response()
-    data = request.get_json() or {}
+    data = body or {}
     image = data.get('Image')
     if not image:
         return bad_request_response('Image is required')
@@ -424,9 +444,8 @@ def bmc_insert_media(vm_id):
     return no_content_response()
 
 
-@bp.route('/redfish/v1/Managers/bmc/VirtualMedia/<vm_id>/Actions/VirtualMedia.EjectMedia', methods=['POST'])
-def bmc_eject_media(vm_id):
-    db = get_db()
+@router.post('/redfish/v1/Managers/bmc/VirtualMedia/{vm_id}/Actions/VirtualMedia.EjectMedia')
+def bmc_eject_media(vm_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute('SELECT id, inserted FROM virtual_media WHERE id=? AND manager_id="bmc"', (vm_id,)).fetchone()
     if not row:
         return not_found_response()
@@ -443,19 +462,16 @@ def bmc_eject_media(vm_id):
     return no_content_response()
 
 
-def _vm_to_dict(row):
+def _vm_to_dict(row) -> dict:
     media_types = json.loads(row['media_types']) if row['media_types'] else []
     vm_id = row['id']
     d = {
         '@odata.id': f'{BASE}/bmc/VirtualMedia/{vm_id}/',
         '@odata.type': '#VirtualMedia.v1_6_0.VirtualMedia',
-        'Id': vm_id,
-        'Name': row['name'],
+        'Id': vm_id, 'Name': row['name'],
         'MediaTypes': media_types,
-        'Image': row['image'] or '',
-        'ImageName': row['image_name'] or '',
-        'Inserted': bool(row['inserted']),
-        'WriteProtected': bool(row['write_protected']),
+        'Image': row['image'] or '', 'ImageName': row['image_name'] or '',
+        'Inserted': bool(row['inserted']), 'WriteProtected': bool(row['write_protected']),
         'ConnectedVia': row['connected_via'],
         'Status': {'State': 'Enabled', 'Health': 'OK'},
         'Actions': {
@@ -472,28 +488,23 @@ def _vm_to_dict(row):
     return d
 
 
-@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/')
-def https_certificates():
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/')
+def https_certificates(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute(
         "SELECT id FROM certificates WHERE parent_path=?",
         ('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates',)
     ).fetchall()
-    members = [{'@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/{row["id"]}/'}
-               for row in rows]
+    members = [{'@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/{row["id"]}/'} for row in rows]
     return json_response({
         '@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/',
         '@odata.type': '#CertificateCollection.CertificateCollection',
-        'Name': 'HTTPS Certificate Collection',
-        'Description': 'HTTPS Certificates',
-        'Members@odata.count': len(members),
-        'Members': members
+        'Name': 'HTTPS Certificate Collection', 'Description': 'HTTPS Certificates',
+        'Members@odata.count': len(members), 'Members': members
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/<cert_id>/')
-def https_certificate(cert_id):
-    db = get_db()
+@router.get('/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/{cert_id}/')
+def https_certificate(cert_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute(
         "SELECT * FROM certificates WHERE id=? AND parent_path=?",
         (cert_id, '/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates')
@@ -506,52 +517,44 @@ def https_certificate(cert_id):
     return json_response({
         '@odata.id': f'{BASE}/bmc/NetworkProtocol/HTTPS/Certificates/{cert_id}/',
         '@odata.type': '#Certificate.v1_6_0.Certificate',
-        'Id': cert_id,
-        'Name': 'HTTPS Certificate',
+        'Id': cert_id, 'Name': 'HTTPS Certificate',
         'Description': row['description'],
         'CertificateString': row['certificate_string'],
-        'Issuer': issuer,
-        'Subject': subject,
-        'KeyUsage': key_usage,
+        'Issuer': issuer, 'Subject': subject, 'KeyUsage': key_usage,
         'ValidNotBefore': row['valid_not_before'],
         'ValidNotAfter': row['valid_not_after']
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/Truststore/Certificates/')
+@router.get('/redfish/v1/Managers/bmc/Truststore/Certificates/')
 def truststore_certificates():
     return json_response({
         '@odata.id': f'{BASE}/bmc/Truststore/Certificates/',
         '@odata.type': '#CertificateCollection.CertificateCollection',
-        'Name': 'Truststore Certificate Collection',
-        'Description': 'Truststore Certificates',
-        'Members@odata.count': 0,
-        'Members': []
+        'Name': 'Truststore Certificate Collection', 'Description': 'Truststore Certificates',
+        'Members@odata.count': 0, 'Members': []
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/HostInterfaces/')
+@router.get('/redfish/v1/Managers/bmc/HostInterfaces/')
 def host_interfaces():
     return json_response({
         '@odata.id': f'{BASE}/bmc/HostInterfaces/',
         '@odata.type': '#HostInterfaceCollection.HostInterfaceCollection',
-        'Name': 'Host Interface Collection',
-        'Description': 'List of Host Interfaces',
+        'Name': 'Host Interface Collection', 'Description': 'List of Host Interfaces',
         'Members@odata.count': 1,
         'Members': [{'@odata.id': f'{BASE}/bmc/HostInterfaces/0/'}]
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/HostInterfaces/<iface_id>/')
-def host_interface(iface_id):
+@router.get('/redfish/v1/Managers/bmc/HostInterfaces/{iface_id}/')
+def host_interface(iface_id: str):
     if iface_id != '0':
-        from ..helpers import not_found_response
         return not_found_response()
     return json_response({
         '@odata.id': f'{BASE}/bmc/HostInterfaces/{iface_id}/',
         '@odata.type': '#HostInterface.v1_3_0.HostInterface',
-        'Id': iface_id,
-        'Name': 'Host Interface 0',
+        'Id': iface_id, 'Name': 'Host Interface 0',
         'Description': 'KCS Host Interface',
         'HostInterfaceType': 'NetworkHostInterface',
         'InterfaceEnabled': True,
@@ -561,52 +564,34 @@ def host_interface(iface_id):
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/SerialInterfaces/')
+@router.get('/redfish/v1/Managers/bmc/SerialInterfaces/')
 def serial_interfaces():
     return json_response({
         '@odata.id': f'{BASE}/bmc/SerialInterfaces/',
         '@odata.type': '#SerialInterfaceCollection.SerialInterfaceCollection',
-        'Name': 'Serial Interface Collection',
-        'Description': 'List of Serial Interfaces',
+        'Name': 'Serial Interface Collection', 'Description': 'List of Serial Interfaces',
         'Members@odata.count': 1,
         'Members': [{'@odata.id': f'{BASE}/bmc/SerialInterfaces/1/'}]
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/SerialInterfaces/<iface_id>/')
-def serial_interface(iface_id):
+@router.get('/redfish/v1/Managers/bmc/SerialInterfaces/{iface_id}/')
+def serial_interface(iface_id: str):
     if iface_id != '1':
-        from ..helpers import not_found_response
         return not_found_response()
     return json_response({
         '@odata.id': f'{BASE}/bmc/SerialInterfaces/{iface_id}/',
         '@odata.type': '#SerialInterface.v1_2_0.SerialInterface',
-        'Id': iface_id,
-        'Name': 'Serial Interface 1',
+        'Id': iface_id, 'Name': 'Serial Interface 1',
         'Description': 'Management Serial Interface',
-        'InterfaceEnabled': True,
-        'SignalType': 'Rs232',
-        'BitRate': '115200',
-        'Parity': 'None',
-        'DataBits': '8',
-        'StopBits': '1',
-        'FlowControl': 'None',
-        'ConnectorType': 'RJ45',
+        'InterfaceEnabled': True, 'SignalType': 'Rs232',
+        'BitRate': '115200', 'Parity': 'None', 'DataBits': '8',
+        'StopBits': '1', 'FlowControl': 'None', 'ConnectorType': 'RJ45',
         'Status': {'State': 'Enabled', 'Health': 'OK'}
     })
 
 
-@bp.route('/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover', methods=['POST'])
-def manager_force_failover():
-    data = request.get_json() or {}
-    new_manager = data.get('NewManager', {})
-    if not new_manager:
-        return bad_request_response('NewManager is required.')
-    return no_content_response()
-
-
-def _create_log_entry(db, log_service_id, parent_type, collection_path):
-    data = request.get_json() or {}
+def _create_log_entry(db, log_service_id, parent_type, collection_path, data):
     if 'Message' not in data:
         return bad_request_response('Message is required.')
     now = now_iso()
@@ -617,15 +602,11 @@ def _create_log_entry(db, log_service_id, parent_type, collection_path):
             created, modified, resolved, sensor_type, entry_code, additional_data_uri)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (entry_id, log_service_id, parent_type,
-         data.get('EntryType', 'Event'),
-         data.get('Severity', 'OK'),
-         data['Message'],
-         data.get('MessageId', ''),
+         data.get('EntryType', 'Event'), data.get('Severity', 'OK'),
+         data['Message'], data.get('MessageId', ''),
          json.dumps(data.get('MessageArgs', [])),
          now, now, 0,
-         data.get('SensorType'),
-         data.get('EntryCode'),
-         data.get('AdditionalDataURI'))
+         data.get('SensorType'), data.get('EntryCode'), data.get('AdditionalDataURI'))
     )
     db.commit()
     row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
@@ -633,24 +614,18 @@ def _create_log_entry(db, log_service_id, parent_type, collection_path):
     return created_response(log_entry_to_dict(row, odata_id), location=odata_id)
 
 
-def _patch_log_entry(db, entry_id, odata_id):
-    data = request.get_json() or {}
+def _patch_log_entry(db, entry_id, odata_id, data):
     fields, values = [], []
     if 'Resolved' in data:
-        fields.append('resolved=?')
-        values.append(1 if data['Resolved'] else 0)
+        fields.append('resolved=?'); values.append(1 if data['Resolved'] else 0)
     if 'Message' in data:
-        fields.append('message=?')
-        values.append(data['Message'])
+        fields.append('message=?'); values.append(data['Message'])
     if 'Severity' in data:
-        fields.append('severity=?')
-        values.append(data['Severity'])
+        fields.append('severity=?'); values.append(data['Severity'])
     if fields:
-        fields.append('modified=?')
-        values.append(now_iso())
+        fields.append('modified=?'); values.append(now_iso())
         values.append(entry_id)
         db.execute(f'UPDATE log_entries SET {", ".join(fields)} WHERE id=?', values)
         db.commit()
     row = db.execute('SELECT * FROM log_entries WHERE id=?', (entry_id,)).fetchone()
     return json_response(log_entry_to_dict(row, odata_id))
-

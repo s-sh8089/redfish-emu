@@ -1,7 +1,8 @@
-from flask import Blueprint
+from fastapi import APIRouter, Depends
+from ..auth import verify_auth
 from ..helpers import json_response, not_found_response
 
-bp = Blueprint('json_schemas', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 SCHEMAS = [
     'AccountService', 'Bios', 'Cable', 'Certificate', 'CertificateLocations',
@@ -16,7 +17,7 @@ SCHEMAS = [
 ]
 
 
-@bp.route('/redfish/v1/JsonSchemas/')
+@router.get('/redfish/v1/JsonSchemas/')
 def json_schemas():
     members = [{'@odata.id': f'/redfish/v1/JsonSchemas/{s}/'} for s in SCHEMAS]
     return json_response({
@@ -29,8 +30,8 @@ def json_schemas():
     })
 
 
-@bp.route('/redfish/v1/JsonSchemas/<schema_id>/')
-def json_schema(schema_id):
+@router.get('/redfish/v1/JsonSchemas/{schema_id}/')
+def json_schema(schema_id: str):
     if schema_id not in SCHEMAS:
         return not_found_response()
     return json_response({

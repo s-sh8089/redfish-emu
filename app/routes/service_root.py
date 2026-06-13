@@ -1,12 +1,15 @@
-from flask import Blueprint
+import sqlite3
+from fastapi import APIRouter, Depends
+from ..database import get_db
+from ..auth import verify_auth
 from ..helpers import json_response
 
-bp = Blueprint('service_root', __name__)
+router = APIRouter(dependencies=[Depends(verify_auth)])
 
 
-@bp.route('/redfish/v1/')
-@bp.route('/redfish/v1')
-def service_root():
+@router.get('/redfish/v1/')
+@router.get('/redfish/v1')
+def service_root(db: sqlite3.Connection = Depends(get_db)):
     return json_response({
         '@odata.id': '/redfish/v1/',
         '@odata.type': '#ServiceRoot.v1_13_0.ServiceRoot',
