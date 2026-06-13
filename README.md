@@ -1,7 +1,7 @@
 # Redfish API Emulator
 
 OpenBMC の bmcweb Redfish API 仕様に基づいたシミュレータです。  
-Docker + Flask + SQLite で構成されており、`localhost:8008` でアクセスできます。
+Docker + FastAPI + SQLite で構成されており、`localhost:8008` でアクセスできます。
 
 ---
 
@@ -115,8 +115,19 @@ docker compose up --build
 | 変数名 | デフォルト | 説明 |
 |---|---|---|
 | `DB_PATH` | `data/redfish.db` | SQLite DBファイルパス |
-| `SECRET_KEY` | `redfish-emu-secret-key` | Flask シークレットキー |
 | `CORS_ORIGINS` | `*` | 許可する CORS オリジン（カンマ区切り） |
+
+---
+
+## API ドキュメント（OpenAPI）
+
+FastAPI が自動生成する Swagger UI でエンドポイントを確認・試用できます。
+
+```
+http://localhost:8008/docs
+```
+
+OpenAPI スキーマ（JSON）は `http://localhost:8008/openapi.json` から取得できます。
 
 ---
 
@@ -160,11 +171,11 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/Systems/` |
 | GET, PATCH | `/redfish/v1/Systems/system` |
-| **POST** | `/redfish/v1/Systems/system/Actions/ComputerSystem.Reset` |
+| POST | `/redfish/v1/Systems/system/Actions/ComputerSystem.Reset` |
 | GET, PATCH | `/redfish/v1/Systems/system/Bios/` |
-| **POST** | `/redfish/v1/Systems/system/Bios/Actions/Bios.ResetBios` |
-| **POST** | `/redfish/v1/Systems/system/Bios/Actions/Bios.ChangePassword` |
-| **GET, PATCH** | `/redfish/v1/Systems/system/SecureBoot/` |
+| POST | `/redfish/v1/Systems/system/Bios/Actions/Bios.ResetBios` |
+| POST | `/redfish/v1/Systems/system/Bios/Actions/Bios.ChangePassword` |
+| GET, PATCH | `/redfish/v1/Systems/system/SecureBoot/` |
 | GET | `/redfish/v1/Systems/system/Processors/` |
 | GET | `/redfish/v1/Systems/system/Processors/{id}/` |
 | GET | `/redfish/v1/Systems/system/Memory/` |
@@ -173,24 +184,24 @@ docker compose up --build
 | GET | `/redfish/v1/Systems/system/Storage/` |
 | GET | `/redfish/v1/Systems/system/Storage/{id}/` |
 | GET | `/redfish/v1/Systems/system/Storage/{id}/Drive/{driveId}/` |
-| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Controllers/` |
-| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Controllers/{ctrlId}/` |
-| **GET** | `/redfish/v1/Systems/system/Storage/{id}/Volumes/` |
+| GET | `/redfish/v1/Systems/system/Storage/{id}/Controllers/` |
+| GET | `/redfish/v1/Systems/system/Storage/{id}/Controllers/{ctrlId}/` |
+| GET | `/redfish/v1/Systems/system/Storage/{id}/Volumes/` |
 | GET | `/redfish/v1/Systems/system/EthernetInterfaces/` |
-| **GET** | `/redfish/v1/Systems/system/EthernetInterfaces/{id}/` |
+| GET | `/redfish/v1/Systems/system/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Systems/system/FabricAdapters/` |
 | GET | `/redfish/v1/Systems/system/FabricAdapters/{id}/` |
 | GET | `/redfish/v1/Systems/system/PCIeDevices/` |
 | GET | `/redfish/v1/Systems/system/PCIeDevices/{id}/` |
 | GET | `/redfish/v1/Systems/system/LogServices/` |
 | GET | `/redfish/v1/Systems/system/LogServices/EventLog/` |
-| **POST** | `/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog` |
-| GET | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/` |
-| GET | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/{id}/` |
+| POST | `/redfish/v1/Systems/system/LogServices/EventLog/Actions/LogService.ClearLog` |
+| GET, POST | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/` |
+| GET, PATCH, DELETE | `/redfish/v1/Systems/system/LogServices/EventLog/Entries/{id}/` |
 | GET | `/redfish/v1/Systems/system/LogServices/SEL/` |
-| **POST** | `/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog` |
-| GET | `/redfish/v1/Systems/system/LogServices/SEL/Entries/` |
-| GET | `/redfish/v1/Systems/system/LogServices/SEL/Entries/{id}/` |
+| POST | `/redfish/v1/Systems/system/LogServices/SEL/Actions/LogService.ClearLog` |
+| GET, POST | `/redfish/v1/Systems/system/LogServices/SEL/Entries/` |
+| GET, PATCH, DELETE | `/redfish/v1/Systems/system/LogServices/SEL/Entries/{id}/` |
 
 ### Chassis
 
@@ -198,7 +209,7 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/Chassis/` |
 | GET | `/redfish/v1/Chassis/{id}/` |
-| **POST** | `/redfish/v1/Chassis/{id}/Actions/Chassis.Reset` |
+| POST | `/redfish/v1/Chassis/{id}/Actions/Chassis.Reset` |
 | GET | `/redfish/v1/Chassis/{id}/Assembly/` |
 | GET | `/redfish/v1/Chassis/{id}/Drive/` |
 | GET | `/redfish/v1/Chassis/{id}/Drive/{driveId}/` |
@@ -210,40 +221,46 @@ docker compose up --build
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem` |
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem/Fans` |
 | GET | `/redfish/v1/Chassis/{id}/ThermalSubsystem/Fans/{fanName}/` |
-| **GET** | `/redfish/v1/Chassis/{id}/PowerSubsystem/` |
+| GET | `/redfish/v1/Chassis/{id}/PowerSubsystem/` |
 | GET | `/redfish/v1/Chassis/{id}/PowerSubsystem/PowerSupplies` |
 | GET | `/redfish/v1/Chassis/{id}/PowerSubsystem/PowerSupplies/{psuId}` |
 | GET | `/redfish/v1/Chassis/{id}/PCIeSlots/` |
 | GET | `/redfish/v1/Chassis/{id}/PCIeSlots/{slotName}` |
+| GET | `/redfish/v1/Chassis/{id}/LogServices/` |
+| GET | `/redfish/v1/Chassis/{id}/LogServices/Log/` |
+| POST | `/redfish/v1/Chassis/{id}/LogServices/Log/Actions/LogService.ClearLog` |
+| GET, POST | `/redfish/v1/Chassis/{id}/LogServices/Log/Entries/` |
+| GET, PATCH, DELETE | `/redfish/v1/Chassis/{id}/LogServices/Log/Entries/{entryId}/` |
 
 ### Managers
 
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/Managers/` |
-| **GET, PATCH** | `/redfish/v1/Managers/bmc/` |
-| **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.Reset` |
-| **POST** | `/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover` |
-| **GET, POST** | `/redfish/v1/Managers/bmc/VirtualMedia/` |
-| **GET** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/` |
-| **POST** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.InsertMedia` |
-| **POST** | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.EjectMedia` |
+| GET, PATCH | `/redfish/v1/Managers/bmc/` |
+| POST | `/redfish/v1/Managers/bmc/Actions/Manager.Reset` |
+| POST | `/redfish/v1/Managers/bmc/Actions/Manager.ForceFailover` |
+| GET, POST | `/redfish/v1/Managers/bmc/VirtualMedia/` |
+| GET | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/` |
+| POST | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.InsertMedia` |
+| POST | `/redfish/v1/Managers/bmc/VirtualMedia/{id}/Actions/VirtualMedia.EjectMedia` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/EthernetInterfaces/{id}/VLANs/` |
-| **GET** | `/redfish/v1/Managers/bmc/HostInterfaces/` |
-| **GET** | `/redfish/v1/Managers/bmc/HostInterfaces/{id}/` |
-| **GET** | `/redfish/v1/Managers/bmc/SerialInterfaces/` |
-| **GET** | `/redfish/v1/Managers/bmc/SerialInterfaces/{id}/` |
+| GET | `/redfish/v1/Managers/bmc/HostInterfaces/` |
+| GET | `/redfish/v1/Managers/bmc/HostInterfaces/{id}/` |
+| GET | `/redfish/v1/Managers/bmc/SerialInterfaces/` |
+| GET | `/redfish/v1/Managers/bmc/SerialInterfaces/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/` |
 | GET | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/` |
-| **POST** | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog` |
-| GET | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{id}/` |
+| POST | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Actions/LogService.ClearLog` |
+| GET, POST | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/` |
+| GET, PATCH, DELETE | `/redfish/v1/Managers/bmc/LogServices/RedfishLog/Entries/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/ManagerDiagnosticData/` |
 | GET | `/redfish/v1/Managers/bmc/ManagerDiagnosticData/GooglegRPCStatistics` |
 | GET, PATCH | `/redfish/v1/Managers/bmc/NetworkProtocol/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
-| **POST** | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
+| POST | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/` |
 | GET | `/redfish/v1/Managers/bmc/NetworkProtocol/HTTPS/Certificates/{id}/` |
 | GET | `/redfish/v1/Managers/bmc/Truststore/Certificates/` |
 
@@ -255,22 +272,22 @@ docker compose up --build
 | GET | `/redfish/v1/EventService/Subscriptions/` |
 | POST | `/redfish/v1/EventService/Subscriptions/` |
 | GET | `/redfish/v1/EventService/Subscriptions/{id}/` |
-| **PATCH** | `/redfish/v1/EventService/Subscriptions/{id}/` |
+| PATCH | `/redfish/v1/EventService/Subscriptions/{id}/` |
 | DELETE | `/redfish/v1/EventService/Subscriptions/{id}/` |
 | POST | `/redfish/v1/EventService/Actions/EventService.SubmitTestEvent` |
-| **GET** | `/redfish/v1/EventService/SSE` |
+| GET | `/redfish/v1/EventService/SSE` |
 
 ### Update Service
 
 | Method | Path |
 |---|---|
 | GET | `/redfish/v1/UpdateService/` |
-| **POST** | `/redfish/v1/UpdateService/update` |
-| **POST** | `/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate` |
+| POST | `/redfish/v1/UpdateService/update` |
+| POST | `/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/` |
 | GET | `/redfish/v1/UpdateService/FirmwareInventory/{id}/` |
-| **GET** | `/redfish/v1/UpdateService/SoftwareInventory/` |
-| **GET** | `/redfish/v1/UpdateService/SoftwareInventory/{id}/` |
+| GET | `/redfish/v1/UpdateService/SoftwareInventory/` |
+| GET | `/redfish/v1/UpdateService/SoftwareInventory/{id}/` |
 
 ### Task Service
 
@@ -278,8 +295,8 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/TaskService/` |
 | GET | `/redfish/v1/TaskService/Tasks/` |
-| **GET** | `/redfish/v1/TaskService/Tasks/{id}/` |
-| **DELETE** | `/redfish/v1/TaskService/Tasks/{id}/` |
+| GET | `/redfish/v1/TaskService/Tasks/{id}/` |
+| DELETE | `/redfish/v1/TaskService/Tasks/{id}/` |
 
 ### Certificate Service
 
@@ -287,17 +304,25 @@ docker compose up --build
 |---|---|
 | GET | `/redfish/v1/CertificateService/` |
 | GET | `/redfish/v1/CertificateService/CertificateLocations/` |
-| **POST** | `/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR` |
-| **POST** | `/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate` |
+| POST | `/redfish/v1/CertificateService/Actions/CertificateService.GenerateCSR` |
+| POST | `/redfish/v1/CertificateService/Actions/CertificateService.ReplaceCertificate` |
+
+### Telemetry Service
+
+| Method | Path |
+|---|---|
+| GET | `/redfish/v1/TelemetryService/` |
+| GET, POST | `/redfish/v1/TelemetryService/MetricReportDefinitions/` |
+| GET, PATCH, DELETE | `/redfish/v1/TelemetryService/MetricReportDefinitions/{id}/` |
+| GET | `/redfish/v1/TelemetryService/MetricReports/` |
+| GET, DELETE | `/redfish/v1/TelemetryService/MetricReports/{id}/` |
+| GET, POST | `/redfish/v1/TelemetryService/Triggers/` |
+| GET, PATCH, DELETE | `/redfish/v1/TelemetryService/Triggers/{id}/` |
 
 ### その他のサービス
 
 | Method | Path |
 |---|---|
-| GET | `/redfish/v1/TelemetryService/` |
-| GET | `/redfish/v1/TelemetryService/MetricReportDefinitions/` |
-| GET | `/redfish/v1/TelemetryService/MetricReports/` |
-| GET | `/redfish/v1/TelemetryService/Triggers/` |
 | GET | `/redfish/v1/JsonSchemas/` |
 | GET | `/redfish/v1/JsonSchemas/{id}/` |
 | GET | `/redfish/v1/Registries/` |
@@ -307,8 +332,6 @@ docker compose up --build
 | GET | `/redfish/v1/AggregationService/` |
 | GET | `/redfish/v1/AggregationService/AggregationSources` |
 | GET | `/redfish/v1/AggregationService/AggregationSources/{id}` |
-
-> **太字** は今回追加または更新されたエンドポイントです。
 
 ---
 
@@ -619,13 +642,14 @@ curl -s -H "X-Auth-Token: $TOKEN" "http://localhost:8008/redfish/v1/TaskService/
 ```
 redfish-emu/
 ├── app/
-│   ├── __init__.py          # Flask app factory (CORS・レート制限・認証ミドルウェア)
-│   ├── auth.py              # 認証・RBAC・ロックアウトロジック
+│   ├── __init__.py          # パッケージ宣言
+│   ├── main.py              # FastAPI インスタンス生成（ミドルウェア・Router 登録・lifespan）
+│   ├── auth.py              # 認証・RBAC・ロックアウトロジック (Depends 関数)
 │   ├── config.py            # 設定 (DB_PATH など)
-│   ├── database.py          # SQLite 初期化・マイグレーション・シードデータ
+│   ├── database.py          # SQLite 初期化・シードデータ・get_db() Depends generator
 │   ├── helpers.py           # レスポンス共通関数 (ETag・ODataクエリ対応)
-│   ├── event_dispatcher.py  # Webhook 配信ロジック・SSE クライアント管理
-│   └── routes/              # Blueprint (リソース単位)
+│   ├── event_dispatcher.py  # asyncio.Queue ベース SSE クライアント管理・Webhook 非同期配信
+│   └── routes/              # APIRouter (リソース単位)
 │       ├── service_root.py
 │       ├── account_service.py
 │       ├── session_service.py
@@ -642,6 +666,7 @@ redfish-emu/
 │       ├── cables.py
 │       └── aggregation_service.py
 ├── data/                    # SQLite DB 保存先 (volume mount)
+├── docs/                    # ドキュメント置き場
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
