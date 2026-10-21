@@ -152,4 +152,5 @@ systemctl start xyz.openbmc_project.Chassis.Control.Power@0.service
 | `simulator/OpenBmc/power_sync.sh` | 電源サービスの開始、BMC 要求とコンテナ状態の同期 |
 | `simulator/PowerBridge/bridge.py` | 電源操作を docker 操作へ変換する HTTP API |
 | `simulator/RockyLinuxServer/Dockerfile` | 監視対象の Rocky Linux |
-| `docker-compose.sim.yml` | `ast2700-obmc` / `rocky-server` / `power-bridge` の定義 |
+| `docker-compose.sim.yml` | `ast2700-obmc` / `rocky-server` / `power-bridge` / `guacd` / `guacamole` の定義 |
+| `simulator/RockyLinuxServer/` `simulator/Guacamole/` | xrdp + Xfce と、ブラウザ表示(Guacamole)。[rocky-xrdp-plan.md](rocky-xrdp-plan.md) |
